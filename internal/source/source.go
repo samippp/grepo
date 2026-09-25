@@ -24,7 +24,7 @@ import (
 	"strings"
 	"time"
 
-	"grepo/internal/logging"
+	"github.com/samippp/grepo/internal/logging"
 )
 
 // Repo is a repository ready to be loaded.

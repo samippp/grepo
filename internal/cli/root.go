@@ -24,7 +24,7 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"grepo/internal/logging"
+	"github.com/samippp/grepo/internal/logging"
 )
 
 // app holds state shared by all commands. The logger is set in

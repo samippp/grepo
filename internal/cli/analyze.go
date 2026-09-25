@@ -19,10 +19,10 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"grepo/internal/graph"
-	"grepo/internal/load"
-	"grepo/internal/logging"
-	"grepo/internal/source"
+	"github.com/samippp/grepo/internal/graph"
+	"github.com/samippp/grepo/internal/load"
+	"github.com/samippp/grepo/internal/logging"
+	"github.com/samippp/grepo/internal/source"
 )
 
 func newAnalyzeCmd(a *app) *cobra.Command {

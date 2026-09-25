@@ -19,7 +19,7 @@ import (
 	"slices"
 	"strings"
 
-	"grepo/internal/load"
+	"github.com/samippp/grepo/internal/load"
 )
 
 // PackageGraph is the package-level import graph of a repository.

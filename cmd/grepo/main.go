@@ -14,7 +14,7 @@ package main
 import (
 	"os"
 
-	"grepo/internal/cli"
+	"github.com/samippp/grepo/internal/cli"
 )
 
 func main() {

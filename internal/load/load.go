@@ -22,7 +22,7 @@ import (
 
 	"golang.org/x/tools/go/packages"
 
-	"grepo/internal/logging"
+	"github.com/samippp/grepo/internal/logging"
 )
 
 // Result is a loaded repository.

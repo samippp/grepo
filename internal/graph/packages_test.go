@@ -11,7 +11,7 @@ import (
 	"slices"
 	"testing"
 
-	"grepo/internal/load"
+	"github.com/samippp/grepo/internal/load"
 )
 
 func TestBuildPackageGraph(t *testing.T) {
