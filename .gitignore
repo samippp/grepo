@@ -1,0 +1,10 @@
+# binaries
+/grepo
+*.exe
+
+# analysis output
+*.grepo.json
+
+# frontend (M3)
+/web/node_modules
+/web/dist
