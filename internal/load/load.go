@@ -9,8 +9,8 @@
 // be downloaded. Limitations: only files for the current GOOS/GOARCH are
 // loaded, test files are skipped, and nested modules are not followed.
 //
-// Planned: M1 adds NeedSyntax, NeedTypes and NeedTypesInfo to the load mode so
-// that graph can build SSA and the VTA call graph.
+// Each package comes back with its parsed syntax trees and type information,
+// which the graph package walks to build the call graph.
 package load
 
 import (
@@ -32,8 +32,12 @@ type Result struct {
 	Packages []*packages.Package
 }
 
-// M0 only needs names, files and imports. Syntax and types get added in M1.
-const mode = packages.NeedName | packages.NeedFiles | packages.NeedImports | packages.NeedModule
+// Names, files and imports feed the package graph. Syntax (the parsed trees in
+// Package.Syntax) and types (Package.Types, Package.TypesInfo) feed the call
+// graph. Type-checking is the slow part: dependencies have to be compiled so
+// their types are known.
+const mode = packages.NeedName | packages.NeedFiles | packages.NeedImports | packages.NeedModule |
+	packages.NeedSyntax | packages.NeedTypes | packages.NeedTypesInfo
 
 // Load loads every package under dir (the equivalent of `go list ./...`).
 // Packages that fail to load are logged as warnings and still returned, with
