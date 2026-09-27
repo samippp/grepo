@@ -7,6 +7,12 @@ import (
 	"example.com/simple/model"
 )
 
+// Getter is satisfied by *Store. main calls Get through it to produce an
+// interface call.
+type Getter interface {
+	Get(id int) model.User
+}
+
 type Store struct {
 	mu    sync.Mutex
 	users map[int]model.User

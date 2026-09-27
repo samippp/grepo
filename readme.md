@@ -57,7 +57,11 @@ internal/graph/    builds graphs from loaded packages
 ## Roadmap
 
 - **M0:** GitHub link input, package import graph ✅
-- **M1:** types, SSA, VTA call graph, SQLite storage keyed by repo + commit
+- **M1a:** symbols, signatures and direct calls (hand-written AST walker) 🚧
+- **M1b:** interface calls resolved to their implementations
+- **M1c:** channel send/receive flows
+- **M1d:** check the call graph against x/tools' VTA in tests
+- **M1e:** SQLite storage keyed by repo + commit
 - **M2:** side-effect and entry-point detection
 - **M3:** web app: paste a link, background analysis job, wiki pages
 - **M4:** LLM summaries
