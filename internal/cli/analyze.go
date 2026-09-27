@@ -1,8 +1,8 @@
 // analyze.go implements `grepo analyze [github-link | path] [-o file]`.
 //
 // Flow: source.Resolve (clone the GitHub repo, or use the local path) →
-// load.Load (run the go toolchain) → graph.BuildPackageGraph (reshape the
-// result) → JSON to stdout or the --out file. Each stage logs what it did and
+// load.Load (run the go toolchain) → graph.BuildPackageGraph and
+// graph.BuildCallGraph (reshape the result) → JSON to stdout or the --out file. Each stage logs what it did and
 // how long it took. Errors in individual packages are logged as warnings rather
 // than failing the run, so partly broken repos still produce output.
 //
@@ -13,6 +13,7 @@ package cli
 
 import (
 	"encoding/json"
+	"fmt"
 	"io"
 	"os"
 	"time"
@@ -62,6 +63,15 @@ func newAnalyzeCmd(a *app) *cobra.Command {
 			log.Info("built package graph",
 				"packages", len(g.Packages), "edges", len(g.Edges), "took", logging.Since(t))
 
+			t = time.Now()
+			cg := graph.BuildCallGraph(res)
+			kinds := cg.CountByKind()
+			log.Info("built call graph",
+				"functions", len(cg.Functions), "calls", len(cg.Calls),
+				"static", kinds[graph.StaticCall], "interface", kinds[graph.InterfaceCall], "dynamic", kinds[graph.DynamicCall],
+				"resolved", resolvedPercent(kinds[graph.StaticCall], len(cg.Calls)),
+				"took", logging.Since(t))
+
 			// Local paths have no source info, so leave the field out entirely.
 			var src *source.Repo
 			if repo.URL != "" {
@@ -70,7 +80,8 @@ func newAnalyzeCmd(a *app) *cobra.Command {
 			result := struct {
 				Source *source.Repo `json:"source,omitempty"`
 				*graph.PackageGraph
-			}{src, g}
+				*graph.CallGraph
+			}{src, g, cg}
 
 			var w io.Writer = cmd.OutOrStdout()
 			if out != "" {
@@ -94,4 +105,12 @@ func newAnalyzeCmd(a *app) *cobra.Command {
 
 	cmd.Flags().StringVarP(&out, "out", "o", "", "write JSON to this file instead of stdout")
 	return cmd
+}
+
+// resolvedPercent formats the share of calls with a known target, e.g. "71.4%".
+func resolvedPercent(static, total int) string {
+	if total == 0 {
+		return "n/a"
+	}
+	return fmt.Sprintf("%.1f%%", 100*float64(static)/float64(total))
 }
