@@ -1,6 +1,15 @@
 package graph
 
-import "github.com/samippp/grepo/internal/load"
+import (
+	"go/ast"
+	"go/token"
+	"go/types"
+	"strconv"
+
+	"golang.org/x/tools/go/packages"
+
+	"github.com/samippp/grepo/internal/load"
+)
 
 type Function struct {
 	ID       string  `json:"id"`
@@ -33,37 +42,106 @@ const (
 	DynamicCall   CallKind = "dynamic"
 )
 
-// CallGraph is every function and method declared in the repo, plus every
-// call made from inside them.
+// CallGraph holds the repo's functions and the calls made inside them.
 type CallGraph struct {
 	Functions []Function     `json:"functions"`
 	Calls     []FunctionCall `json:"calls"`
 }
 
-// BuildCallGraph walks the syntax trees in res and records each function
-// declaration and each call inside it. callgraph_test.go defines the expected
-// output for the fixture in testdata/simple.
-//
-// Rules the tests encode (change the tests if you decide differently):
-//   - IDs come from types.Func.FullName(), e.g. "(*example.com/simple/store.Store).Get".
-//   - Types are written with types.TypeString(t, nil), e.g. "example.com/simple/model.User".
-//   - Positions are "file:line", relative to the repo root (see rel in packages.go).
-//   - Calls inside a closure belong to the enclosing function. Calling the
-//     closure itself is not an edge.
-//   - Built-ins (len, append) and type conversions (int64(n)) are not calls.
-//   - Calls to code outside the repo (fmt.Println) are kept, since side-effect
-//     detection needs them.
-//   - Interface calls point at the interface method; dynamic calls have an
-//     empty Callee.
-//   - One FunctionCall per call site, so repeated calls give repeated edges.
-//   - Output is sorted, so repeated runs produce identical JSON.
+// BuildCallGraph records every function and call in res. Rules (see tests):
+//   - IDs from FullName(), types from types.TypeString(t, nil)
+//   - closure calls belong to the enclosing func; built-ins/conversions aren't calls
+//   - external calls kept; interface calls point at the interface method
+//   - dynamic calls have no Callee; one edge per call site; output sorted
 func BuildCallGraph(res *load.Result) *CallGraph {
-	// TODO: your walker goes here.
-	return &CallGraph{Functions: []Function{}, Calls: []FunctionCall{}}
+	b := &callGraphBuilder{
+		root:      res.Dir,
+		functions: []Function{},
+		calls:     []FunctionCall{},
+	}
+
+	for _, pkg := range res.Packages {
+		b.pkg = pkg
+		for _, syntaxTree := range pkg.Syntax {
+			for _, decl := range syntaxTree.Decls {
+				switch d := decl.(type) {
+				case *ast.FuncDecl:
+					b.handleFuncDecl(d)
+				case *ast.GenDecl:
+					// TODO implement this shit
+				}
+			}
+		}
+	}
+
+	// TODO: sort b.functions and b.calls
+	return &CallGraph{Functions: b.functions, Calls: b.calls}
 }
 
-// CountByKind returns how many calls there are of each kind. The share of
-// StaticCall is the resolution rate: how many calls have a known target.
+// callGraphBuilder holds walk context and results.
+type callGraphBuilder struct {
+	root string            // repo root
+	pkg  *packages.Package // current package
+
+	functions []Function
+	calls     []FunctionCall
+}
+
+func (b *callGraphBuilder) handleFuncDecl(funcDecl *ast.FuncDecl) {
+	info := b.pkg.TypesInfo
+
+	// Missing only if the package has type errors; skip it.
+	fn, ok := info.Defs[funcDecl.Name].(*types.Func)
+	if !ok {
+		return
+	}
+
+	var recv *Param
+	if rs := handleFields(funcDecl.Recv, info); len(rs) > 0 {
+		recv = &rs[0]
+	}
+
+	b.functions = append(b.functions, Function{
+		ID:       fn.FullName(),
+		Name:     funcDecl.Name.Name,
+		Package:  b.pkg.PkgPath,
+		Receiver: recv,
+		Params:   handleFields(funcDecl.Type.Params, info),
+		Results:  handleFields(funcDecl.Type.Results, info),
+		Exported: funcDecl.Name.IsExported(),
+		Pos:      b.pos(funcDecl.Pos()),
+	})
+
+	// TODO: walk funcDecl.Body for calls
+}
+
+// pos formats p as "file:line" relative to the repo root.
+func (b *callGraphBuilder) pos(p token.Pos) string {
+	position := b.pkg.Fset.Position(p)
+	return rel(b.root, position.Filename) + ":" + strconv.Itoa(position.Line)
+}
+
+// Parses a field list into a list of Params
+func handleFields(fields *ast.FieldList, info *types.Info) []Param {
+	if fields == nil {
+		return nil
+	}
+	var params []Param
+	for _, f := range fields.List {
+		typ := types.TypeString(info.TypeOf(f.Type), nil)
+
+		if len(f.Names) == 0 { // f.Names is []*ast.Ident
+			params = append(params, Param{Type: typ})
+			continue
+		}
+		for _, name := range f.Names { // name is *ast.Ident
+			params = append(params, Param{Name: name.Name, Type: typ})
+		}
+	}
+	return params
+}
+
+// CountByKind counts calls per kind. The StaticCall share is the resolution rate.
 func (g *CallGraph) CountByKind() map[CallKind]int {
 	counts := make(map[CallKind]int)
 	for _, c := range g.Calls {

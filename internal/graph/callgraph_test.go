@@ -1,8 +1,4 @@
-// callgraph_test.go defines what BuildCallGraph should produce for the fixture
-// in testdata/simple. Each expected call is commented with the case it covers.
-//
-// The tests skip while BuildCallGraph returns nothing, so CI stays green until
-// the walker exists. Remove that skip once you start implementing.
+// Expected BuildCallGraph output for testdata/simple.
 
 package graph
 
@@ -34,9 +30,9 @@ func buildFixtureCallGraph(t *testing.T) *CallGraph {
 		t.Fatal(err)
 	}
 	g := BuildCallGraph(res)
-	// TODO: remove this skip once you start implementing BuildCallGraph.
 	if len(g.Functions) == 0 && len(g.Calls) == 0 {
-		t.Skip("BuildCallGraph not implemented yet")
+		//t.Skip("BuildCallGraph not implemented yet")
+		t.Error("Functions and calls not scanned. 0 for all")
 	}
 	return g
 }
@@ -143,8 +139,7 @@ func TestCallGraphIsSorted(t *testing.T) {
 	}
 }
 
-// equalFunction treats nil and empty slices as equal, so the walker can use
-// either.
+// equalFunction treats nil and empty slices as equal.
 func equalFunction(a, b Function) bool {
 	return a.ID == b.ID && a.Name == b.Name && a.Package == b.Package &&
 		equalParam(a.Receiver, b.Receiver) &&
