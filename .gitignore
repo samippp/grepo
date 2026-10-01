@@ -8,3 +8,7 @@
 # frontend (M3)
 /web/node_modules
 /web/dist
+
+# Delve debug binaries
+debug.test*
+__debug_bin*
