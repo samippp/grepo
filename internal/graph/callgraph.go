@@ -1,9 +1,11 @@
 package graph
 
 import (
+	"cmp"
 	"go/ast"
 	"go/token"
 	"go/types"
+	"slices"
 	"strconv"
 
 	"golang.org/x/tools/go/packages"
@@ -32,6 +34,13 @@ type FunctionCall struct {
 	Callee         string   `json:"callee"`
 	CallerPosition string   `json:"callerPosition"`
 	CallKind       CallKind `json:"callKind"`
+	Args           []Arg    `json:"args"`
+}
+
+// Arg is one argument at a call site.
+type Arg struct {
+	Expr string `json:"expr"` // as written, e.g. "u.Name"
+	Type string `json:"type"` // e.g. "string"
 }
 
 type CallKind string
@@ -73,8 +82,16 @@ func BuildCallGraph(res *load.Result) *CallGraph {
 			}
 		}
 	}
-
-	// TODO: sort b.functions and b.calls
+	slices.SortFunc(b.functions, func(a, b Function) int {
+		return cmp.Compare(a.ID, b.ID)
+	})
+	slices.SortFunc(b.calls, func(a, b FunctionCall) int {
+		return cmp.Or(
+			cmp.Compare(a.Caller, b.Caller),
+			cmp.Compare(a.CallerPosition, b.CallerPosition),
+			cmp.Compare(a.Callee, b.Callee),
+		)
+	})
 	return &CallGraph{Functions: b.functions, Calls: b.calls}
 }
 
@@ -112,7 +129,81 @@ func (b *callGraphBuilder) handleFuncDecl(funcDecl *ast.FuncDecl) {
 		Pos:      b.pos(funcDecl.Pos()),
 	})
 
-	// TODO: walk funcDecl.Body for calls
+	// A nil *BlockStmt passed as ast.Node isn't == nil, so check here.
+	if funcDecl.Body != nil {
+		b.handleFuncCalls(fn, funcDecl.Body)
+	}
+}
+
+// handleFuncCalls records every call under root, made by caller.
+func (b *callGraphBuilder) handleFuncCalls(caller *types.Func, root ast.Node) {
+	ast.Inspect(root, func(n ast.Node) bool {
+		call, ok := n.(*ast.CallExpr)
+		if !ok {
+			return true
+		}
+		callee, isCall := b.callee(call)
+		if !isCall {
+			return true
+		}
+		c := FunctionCall{
+			Caller:         caller.FullName(),
+			CallerPosition: b.pos(call.Pos()),
+			CallKind:       callKind(callee),
+			Args:           b.args(call.Args),
+		}
+		if callee != nil {
+			c.Callee = callee.FullName()
+		}
+		b.calls = append(b.calls, c)
+		return true // closures and arguments can contain calls
+	})
+}
+
+// callee returns the function call refers to, or nil if unknown (dynamic).
+// isCall is false for conversions, built-ins and inline closures.
+func (b *callGraphBuilder) callee(call *ast.CallExpr) (fn *types.Func, isCall bool) {
+	info := b.pkg.TypesInfo
+	if tv := info.Types[call.Fun]; tv.IsType() || tv.IsBuiltin() {
+		return nil, false // int64(n), len(x)
+	}
+
+	var name *ast.Ident
+	switch fun := ast.Unparen(call.Fun).(type) {
+	case *ast.Ident:
+		name = fun // foo(), f()
+	case *ast.SelectorExpr:
+		name = fun.Sel // pkg.Foo(), obj.Method(), obj.field.Method()
+	case *ast.FuncLit:
+		return nil, false // func(){...}(): its body is walked anyway
+	}
+	// Other shapes (Foo[int](x), f()()) leave name nil: dynamic.
+
+	fn, _ = info.Uses[name].(*types.Func)
+	return fn, true
+}
+
+// callKind classifies a call by its callee.
+func callKind(callee *types.Func) CallKind {
+	if callee == nil {
+		return DynamicCall
+	}
+	if recv := callee.Signature().Recv(); recv != nil && types.IsInterface(recv.Type()) {
+		return InterfaceCall
+	}
+	return StaticCall
+}
+
+// args describes each argument expression at a call site.
+func (b *callGraphBuilder) args(exprs []ast.Expr) []Arg {
+	var args []Arg
+	for _, e := range exprs {
+		args = append(args, Arg{
+			Expr: types.ExprString(e),
+			Type: types.TypeString(b.pkg.TypesInfo.TypeOf(e), nil),
+		})
+	}
+	return args
 }
 
 // pos formats p as "file:line" relative to the repo root.

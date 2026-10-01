@@ -93,17 +93,23 @@ func TestCallGraphCalls(t *testing.T) {
 		// store.New(): function in another package.
 		{Caller: idMain, Callee: idNew, CallerPosition: "main.go:16", CallKind: StaticCall},
 		// s.Get(1) where s is *Store: method on a concrete type.
-		{Caller: idMain, Callee: idGet, CallerPosition: "main.go:17", CallKind: StaticCall},
+		{Caller: idMain, Callee: idGet, CallerPosition: "main.go:17", CallKind: StaticCall,
+			Args: []Arg{{"1", "int"}}},
 		// g.Get(2) where g is store.Getter: points at the interface method.
-		{Caller: idMain, Callee: "(" + storePkg + ".Getter).Get", CallerPosition: "main.go:20", CallKind: InterfaceCall},
+		{Caller: idMain, Callee: "(" + storePkg + ".Getter).Get", CallerPosition: "main.go:20", CallKind: InterfaceCall,
+			Args: []Arg{{"2", "int"}}},
 		// f(u.Name) where f := greet: a function value, target unknown.
-		{Caller: idMain, Callee: "", CallerPosition: "main.go:23", CallKind: DynamicCall},
+		{Caller: idMain, Callee: "", CallerPosition: "main.go:23", CallKind: DynamicCall,
+			Args: []Arg{{"u.Name", "string"}}},
 		// greet("closure") inside func(){...}(): belongs to main.
-		{Caller: idMain, Callee: idGreet, CallerPosition: "main.go:26", CallKind: StaticCall},
+		{Caller: idMain, Callee: idGreet, CallerPosition: "main.go:26", CallKind: StaticCall,
+			Args: []Arg{{`"closure"`, "string"}}},
 		// Nothing for len(u.Name) (built-in) or int64(n) (conversion).
 		// fmt.Println(u): outside the repo, but kept.
-		{Caller: idMain, Callee: "fmt.Println", CallerPosition: "main.go:32", CallKind: StaticCall},
-		{Caller: idGreet, Callee: "fmt.Println", CallerPosition: "main.go:36", CallKind: StaticCall},
+		{Caller: idMain, Callee: "fmt.Println", CallerPosition: "main.go:32", CallKind: StaticCall,
+			Args: []Arg{{"u", "example.com/simple/model.User"}}},
+		{Caller: idGreet, Callee: "fmt.Println", CallerPosition: "main.go:36", CallKind: StaticCall,
+			Args: []Arg{{`"hello"`, "string"}, {"name", "string"}}},
 		// s.mu.Lock(): method reached through a struct field.
 		{Caller: idGet, Callee: "(*sync.Mutex).Lock", CallerPosition: "store/store.go:24", CallKind: StaticCall},
 		// defer s.mu.Unlock(): deferred calls count too.
@@ -164,5 +170,5 @@ func formatFunction(f Function) string {
 }
 
 func formatCall(c FunctionCall) string {
-	return fmt.Sprintf("%s -> %q at %s (%s)", c.Caller, c.Callee, c.CallerPosition, c.CallKind)
+	return fmt.Sprintf("%s -> %q at %s (%s) args=%v", c.Caller, c.Callee, c.CallerPosition, c.CallKind, c.Args)
 }
