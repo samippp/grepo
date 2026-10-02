@@ -21,6 +21,17 @@ const (
 	idGreet = mainPkg + ".greet"
 	idNew   = storePkg + ".New"
 	idGet   = "(*" + storePkg + ".Store).Get"
+
+	idFirst    = mainPkg + ".first"
+	idPair     = mainPkg + ".pair"
+	idGenerics = mainPkg + ".generics"
+	idPush     = "(*" + mainPkg + ".List[T]).Push"
+	idUseList  = mainPkg + ".useList"
+
+	idInit1     = mainPkg + ".init@main.go#1"
+	idInit2     = mainPkg + ".init@main.go#2"
+	idStoreInit = storePkg + ".init@store/store.go#1"
+	idListInit  = "(*" + mainPkg + ".List[T]).init"
 )
 
 func buildFixtureCallGraph(t *testing.T) *CallGraph {
@@ -63,6 +74,42 @@ func TestCallGraphFunctions(t *testing.T) {
 			Results:  []Param{{Name: "", Type: "example.com/simple/model.User"}},
 			Exported: true,
 			Pos:      "store/store.go:23",
+		},
+		{
+			ID: idFirst, Name: "first", Package: mainPkg,
+			Params:  []Param{{Name: "xs", Type: "[]T"}},
+			Results: []Param{{Name: "", Type: "T"}},
+			Pos:     "main.go:39",
+		},
+		{
+			ID: idPair, Name: "pair", Package: mainPkg,
+			Params: []Param{{Name: "k", Type: "K"}, {Name: "v", Type: "V"}},
+			Pos:    "main.go:41",
+		},
+		{
+			ID: idGenerics, Name: "generics", Package: mainPkg,
+			Pos: "main.go:44",
+		},
+		{
+			ID: idPush, Name: "Push", Package: mainPkg,
+			Receiver: &Param{Name: "l", Type: "*" + mainPkg + ".List[T]"},
+			Params:   []Param{{Name: "v", Type: "T"}},
+			Exported: true,
+			Pos:      "main.go:56",
+		},
+		{
+			ID: idUseList, Name: "useList", Package: mainPkg,
+			Pos: "main.go:58",
+		},
+		// Several inits per package: file + position makes each ID unique (#6).
+		{ID: idInit1, Name: "init", Package: mainPkg, Pos: "main.go:64"},
+		{ID: idInit2, Name: "init", Package: mainPkg, Pos: "main.go:66"},
+		{ID: idStoreInit, Name: "init", Package: storePkg, Pos: "store/store.go:29"},
+		// A method named init is an ordinary method: normal ID.
+		{
+			ID: idListInit, Name: "init", Package: mainPkg,
+			Receiver: &Param{Name: "l", Type: "*" + mainPkg + ".List[T]"},
+			Pos:      "main.go:68",
 		},
 	}
 
@@ -114,6 +161,23 @@ func TestCallGraphCalls(t *testing.T) {
 		{Caller: idGet, Callee: "(*sync.Mutex).Lock", CallerPosition: "store/store.go:24", CallKind: StaticCall},
 		// defer s.mu.Unlock(): deferred calls count too.
 		{Caller: idGet, Callee: "(*sync.Mutex).Unlock", CallerPosition: "store/store.go:25", CallKind: StaticCall},
+		// first[int](xs): explicit type arg (IndexExpr), target known (#4).
+		{Caller: idGenerics, Callee: idFirst, CallerPosition: "main.go:46", CallKind: StaticCall,
+			Args: []Arg{{"xs", "[]int"}}},
+		// pair[string, int](...): two type args (IndexListExpr) (#4).
+		{Caller: idGenerics, Callee: idPair, CallerPosition: "main.go:47", CallKind: StaticCall,
+			Args: []Arg{{`"a"`, "string"}, {"1", "int"}}},
+		// handlers[0](...): also an IndexExpr, but a func value, so dynamic.
+		{Caller: idGenerics, Callee: "", CallerPosition: "main.go:50", CallKind: DynamicCall,
+			Args: []Arg{{`"indexed"`, "string"}}},
+		// l.Push(1) on List[int]: callee must be the declared List[T] method (#5).
+		{Caller: idUseList, Callee: idPush, CallerPosition: "main.go:60", CallKind: StaticCall,
+			Args: []Arg{{"1", "int"}}},
+		// Calls from each init are attributed to that init (#6).
+		{Caller: idInit1, Callee: idGreet, CallerPosition: "main.go:64", CallKind: StaticCall,
+			Args: []Arg{{`"init 1"`, "string"}}},
+		{Caller: idInit2, Callee: idGreet, CallerPosition: "main.go:66", CallKind: StaticCall,
+			Args: []Arg{{`"init 2"`, "string"}}},
 	}
 
 	got := make(map[string]bool)

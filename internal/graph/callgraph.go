@@ -2,6 +2,7 @@ package graph
 
 import (
 	"cmp"
+	"fmt"
 	"go/ast"
 	"go/token"
 	"go/types"
@@ -65,6 +66,7 @@ type CallGraph struct {
 func BuildCallGraph(res *load.Result) *CallGraph {
 	b := &callGraphBuilder{
 		root:      res.Dir,
+		inits:     map[string]int{},
 		functions: []Function{},
 		calls:     []FunctionCall{},
 	}
@@ -100,6 +102,8 @@ type callGraphBuilder struct {
 	root string            // repo root
 	pkg  *packages.Package // current package
 
+	inits map[string]int // init funcs seen per file, for unique init IDs
+
 	functions []Function
 	calls     []FunctionCall
 }
@@ -118,8 +122,9 @@ func (b *callGraphBuilder) handleFuncDecl(funcDecl *ast.FuncDecl) {
 		recv = &rs[0]
 	}
 
+	id := b.funcID(funcDecl, fn)
 	b.functions = append(b.functions, Function{
-		ID:       fn.FullName(),
+		ID:       id,
 		Name:     funcDecl.Name.Name,
 		Package:  b.pkg.PkgPath,
 		Receiver: recv,
@@ -131,12 +136,23 @@ func (b *callGraphBuilder) handleFuncDecl(funcDecl *ast.FuncDecl) {
 
 	// A nil *BlockStmt passed as ast.Node isn't == nil, so check here.
 	if funcDecl.Body != nil {
-		b.handleFuncCalls(fn, funcDecl.Body)
+		b.handleFuncCalls(id, funcDecl.Body)
 	}
 }
 
-// handleFuncCalls records every call under root, made by caller.
-func (b *callGraphBuilder) handleFuncCalls(caller *types.Func, root ast.Node) {
+// funcID is fn's FullName, except each init gets "pkg.init@file#n", since a
+// package can have several. Call once per declaration: it counts inits.
+func (b *callGraphBuilder) funcID(funcDecl *ast.FuncDecl, fn *types.Func) string {
+	if funcDecl.Recv != nil || funcDecl.Name.Name != "init" {
+		return fn.FullName()
+	}
+	file := rel(b.root, b.pkg.Fset.Position(funcDecl.Pos()).Filename)
+	b.inits[file]++
+	return fmt.Sprintf("%s@%s#%d", fn.FullName(), file, b.inits[file])
+}
+
+// handleFuncCalls records every call under root, made by the function callerID.
+func (b *callGraphBuilder) handleFuncCalls(callerID string, root ast.Node) {
 	ast.Inspect(root, func(n ast.Node) bool {
 		call, ok := n.(*ast.CallExpr)
 		if !ok {
@@ -147,7 +163,7 @@ func (b *callGraphBuilder) handleFuncCalls(caller *types.Func, root ast.Node) {
 			return true
 		}
 		c := FunctionCall{
-			Caller:         caller.FullName(),
+			Caller:         callerID,
 			CallerPosition: b.pos(call.Pos()),
 			CallKind:       callKind(callee),
 			Args:           b.args(call.Args),
@@ -169,18 +185,32 @@ func (b *callGraphBuilder) callee(call *ast.CallExpr) (fn *types.Func, isCall bo
 	}
 
 	var name *ast.Ident
-	switch fun := ast.Unparen(call.Fun).(type) {
+	switch fun := unindex(ast.Unparen(call.Fun)).(type) {
 	case *ast.Ident:
-		name = fun // foo(), f()
+		name = fun // foo(), f(), first[int](), handlers[0]()
 	case *ast.SelectorExpr:
-		name = fun.Sel // pkg.Foo(), obj.Method(), obj.field.Method()
+		name = fun.Sel // pkg.Foo(), obj.Method(), slices.Map[int]()
 	case *ast.FuncLit:
 		return nil, false // func(){...}(): its body is walked anyway
 	}
-	// Other shapes (Foo[int](x), f()()) leave name nil: dynamic.
+	// Other shapes (f()()) leave name nil: dynamic.
 
 	fn, _ = info.Uses[name].(*types.Func)
+	if fn != nil {
+		fn = fn.Origin() // List[int].Push → List[T].Push, to match the declared node
+	}
 	return fn, true
+}
+
+// unindex strips type args or an index: first[int] → first, handlers[0] → handlers.
+func unindex(e ast.Expr) ast.Expr {
+	switch x := e.(type) {
+	case *ast.IndexExpr:
+		return x.X
+	case *ast.IndexListExpr:
+		return x.X
+	}
+	return e
 }
 
 // callKind classifies a call by its callee.

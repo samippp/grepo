@@ -25,3 +25,5 @@ func (s *Store) Get(id int) model.User {
 	defer s.mu.Unlock()
 	return s.users[id]
 }
+
+func init() {}
