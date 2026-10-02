@@ -35,3 +35,34 @@ func main() {
 func greet(name string) {
 	fmt.Println("hello", name)
 }
+
+func first[T any](xs []T) T { return xs[0] }
+
+func pair[K, V any](k K, v V) {}
+
+// generics calls generic funcs with explicit type args, plus an indexed func value.
+func generics() {
+	xs := []int{1, 2}
+	first[int](xs)
+	pair[string, int]("a", 1)
+
+	handlers := []func(string){greet}
+	handlers[0]("indexed")
+}
+
+// List is generic; useList calls its method through List[int] (#5).
+type List[T any] struct{ items []T }
+
+func (l *List[T]) Push(v T) { l.items = append(l.items, v) }
+
+func useList() {
+	var l List[int]
+	l.Push(1)
+}
+
+// Two inits in one file (#6), plus a method named init that keeps its normal ID.
+func init() { greet("init 1") }
+
+func init() { greet("init 2") }
+
+func (l *List[T]) init() {}
