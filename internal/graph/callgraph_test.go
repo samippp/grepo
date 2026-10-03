@@ -16,6 +16,7 @@ import (
 const (
 	mainPkg  = "example.com/simple"
 	storePkg = "example.com/simple/store"
+	modelPkg = "example.com/simple/model"
 
 	idMain  = mainPkg + ".main"
 	idGreet = mainPkg + ".greet"
@@ -32,6 +33,16 @@ const (
 	idInit2     = mainPkg + ".init@main.go#2"
 	idStoreInit = storePkg + ".init@store/store.go#1"
 	idListInit  = "(*" + mainPkg + ".List[T]).init"
+
+	// Type IDs. Generic types keep param names but not constraints: List[T], not List[T any].
+	tStore     = storePkg + ".Store"
+	tGetter    = storePkg + ".Getter"
+	tList      = mainPkg + ".List[T]"
+	tUser      = modelPkg + ".User"
+	tTagged    = modelPkg + ".Tagged"
+	tID        = modelPkg + ".ID"
+	tUserID    = modelPkg + ".UserID"
+	tReadNamer = modelPkg + ".ReadNamer"
 )
 
 func buildFixtureCallGraph(t *testing.T) *CallGraph {
@@ -74,6 +85,7 @@ func TestCallGraphFunctions(t *testing.T) {
 			Results:  []Param{{Name: "", Type: "example.com/simple/model.User"}},
 			Exported: true,
 			Pos:      "store/store.go:23",
+			Owner:    tStore,
 		},
 		{
 			ID: idFirst, Name: "first", Package: mainPkg,
@@ -96,6 +108,7 @@ func TestCallGraphFunctions(t *testing.T) {
 			Params:   []Param{{Name: "v", Type: "T"}},
 			Exported: true,
 			Pos:      "main.go:56",
+			Owner:    tList,
 		},
 		{
 			ID: idUseList, Name: "useList", Package: mainPkg,
@@ -110,6 +123,32 @@ func TestCallGraphFunctions(t *testing.T) {
 			ID: idListInit, Name: "init", Package: mainPkg,
 			Receiver: &Param{Name: "l", Type: "*" + mainPkg + ".List[T]"},
 			Pos:      "main.go:68",
+			Owner:    tList,
+		},
+		// Value receiver on a non-struct type.
+		{
+			ID: "(" + tUserID + ").String", Name: "String", Package: modelPkg,
+			Receiver: &Param{Name: "u", Type: tUserID},
+			Results:  []Param{{Name: "", Type: "string"}},
+			Exported: true,
+			Pos:      "model/kinds.go:10",
+			Owner:    tUserID,
+		},
+		// Interface methods: explicit ones only, owned by their interface, no receiver.
+		{
+			ID: "(" + tGetter + ").Get", Name: "Get", Package: storePkg,
+			Params:   []Param{{Name: "id", Type: "int"}},
+			Results:  []Param{{Name: "", Type: tUser}},
+			Exported: true,
+			Pos:      "store/store.go:13",
+			Owner:    tGetter,
+		},
+		{
+			ID: "(" + tReadNamer + ").Name", Name: "Name", Package: modelPkg,
+			Results:  []Param{{Name: "", Type: "string"}},
+			Exported: true,
+			Pos:      "model/kinds.go:15",
+			Owner:    tReadNamer,
 		},
 	}
 
@@ -130,6 +169,81 @@ func TestCallGraphFunctions(t *testing.T) {
 	}
 	for id := range got {
 		t.Errorf("unexpected function %s", id)
+	}
+}
+
+func TestCallGraphTypes(t *testing.T) {
+	g := buildFixtureCallGraph(t)
+
+	want := []Type{
+		{
+			ID: tStore, Name: "Store", Package: storePkg, Kind: StructType, Exported: true,
+			Pos: "store/store.go:16",
+			Fields: []Field{
+				{ID: tStore + ".mu", Name: "mu", Type: "sync.Mutex", Pos: "store/store.go:17"},
+				{ID: tStore + ".users", Name: "users", Type: "map[int]" + tUser, Pos: "store/store.go:18"},
+			},
+		},
+		{
+			ID: tGetter, Name: "Getter", Package: storePkg, Kind: InterfaceType, Exported: true,
+			Pos: "store/store.go:12",
+		},
+		{
+			ID: tList, Name: "List", Package: mainPkg, Kind: StructType, Exported: true,
+			Pos:    "main.go:54",
+			Fields: []Field{{ID: tList + ".items", Name: "items", Type: "[]T", Pos: "main.go:54"}},
+		},
+		{
+			ID: tUser, Name: "User", Package: modelPkg, Kind: StructType, Exported: true,
+			Pos: "model/model.go:4",
+			Fields: []Field{
+				{ID: tUser + ".ID", Name: "ID", Type: "int", Pos: "model/model.go:5"},
+				{ID: tUser + ".Name", Name: "Name", Type: "string", Pos: "model/model.go:6"},
+			},
+		},
+		// Embedded struct field: named after its type, Embedded set.
+		{
+			ID: tTagged, Name: "Tagged", Package: modelPkg, Kind: StructType, Exported: true,
+			Pos: "model/kinds.go:18",
+			Fields: []Field{
+				{ID: tTagged + ".User", Name: "User", Type: tUser, Embedded: true, Pos: "model/kinds.go:19"},
+				{ID: tTagged + ".Tag", Name: "Tag", Type: "string", Pos: "model/kinds.go:20"},
+			},
+		},
+		// Alias: Target is what it names; no fields or methods of its own.
+		{
+			ID: tID, Name: "ID", Package: modelPkg, Kind: AliasType, Exported: true,
+			Pos: "model/kinds.go:6", Target: "int",
+		},
+		// Neither struct nor interface: Underlying says what it is.
+		{
+			ID: tUserID, Name: "UserID", Package: modelPkg, Kind: OtherType, Exported: true,
+			Pos: "model/kinds.go:8", Underlying: "int",
+		},
+		// Embedded interface: recorded in Embeds, its methods are not copied.
+		{
+			ID: tReadNamer, Name: "ReadNamer", Package: modelPkg, Kind: InterfaceType, Exported: true,
+			Pos: "model/kinds.go:13", Embeds: []string{"io.Reader"},
+		},
+	}
+
+	got := make(map[string]Type)
+	for _, ty := range g.Types {
+		got[ty.ID] = ty
+	}
+	for _, w := range want {
+		ty, ok := got[w.ID]
+		if !ok {
+			t.Errorf("missing type %s", w.ID)
+			continue
+		}
+		if !equalType(ty, w) {
+			t.Errorf("type %s:\n got  %+v\n want %+v", w.ID, ty, w)
+		}
+		delete(got, w.ID)
+	}
+	for id := range got {
+		t.Errorf("unexpected type %s", id)
 	}
 }
 
@@ -202,6 +316,9 @@ func TestCallGraphIsSorted(t *testing.T) {
 	if !slices.IsSortedFunc(g.Functions, func(a, b Function) int { return cmp.Compare(a.ID, b.ID) }) {
 		t.Error("Functions are not sorted by ID")
 	}
+	if !slices.IsSortedFunc(g.Types, func(a, b Type) int { return cmp.Compare(a.ID, b.ID) }) {
+		t.Error("Types are not sorted by ID")
+	}
 	if !slices.IsSortedFunc(g.Calls, func(a, b FunctionCall) int {
 		return cmp.Or(cmp.Compare(a.Caller, b.Caller), cmp.Compare(a.CallerPosition, b.CallerPosition), cmp.Compare(a.Callee, b.Callee))
 	}) {
@@ -214,7 +331,15 @@ func equalFunction(a, b Function) bool {
 	return a.ID == b.ID && a.Name == b.Name && a.Package == b.Package &&
 		equalParam(a.Receiver, b.Receiver) &&
 		slices.Equal(a.Params, b.Params) && slices.Equal(a.Results, b.Results) &&
-		a.Exported == b.Exported && a.Pos == b.Pos
+		a.Exported == b.Exported && a.Pos == b.Pos && a.Owner == b.Owner
+}
+
+// equalType treats nil and empty slices as equal.
+func equalType(a, b Type) bool {
+	return a.ID == b.ID && a.Name == b.Name && a.Package == b.Package && a.Kind == b.Kind &&
+		a.Exported == b.Exported && a.Pos == b.Pos &&
+		slices.Equal(a.Fields, b.Fields) && slices.Equal(a.Embeds, b.Embeds) &&
+		a.Target == b.Target && a.Underlying == b.Underlying
 }
 
 func equalParam(a, b *Param) bool {
@@ -229,8 +354,8 @@ func formatFunction(f Function) string {
 	if f.Receiver != nil {
 		recv = fmt.Sprint(*f.Receiver)
 	}
-	return fmt.Sprintf("{name=%s pkg=%s recv=%s params=%v results=%v exported=%v pos=%s}",
-		f.Name, f.Package, recv, f.Params, f.Results, f.Exported, f.Pos)
+	return fmt.Sprintf("{name=%s pkg=%s recv=%s params=%v results=%v exported=%v pos=%s owner=%s}",
+		f.Name, f.Package, recv, f.Params, f.Results, f.Exported, f.Pos, f.Owner)
 }
 
 func formatCall(c FunctionCall) string {
