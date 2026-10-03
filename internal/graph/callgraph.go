@@ -8,6 +8,7 @@ import (
 	"go/types"
 	"slices"
 	"strconv"
+	"strings"
 
 	"golang.org/x/tools/go/packages"
 
@@ -23,6 +24,41 @@ type Function struct {
 	Results  []Param `json:"results"`
 	Exported bool    `json:"exported"`
 	Pos      string  `json:"pos"`
+	Owner    string  `json:"owner,omitempty"` // methods: ID of the type that declares it
+}
+
+// Type is a named type declared in the repo.
+type Type struct {
+	ID       string   `json:"id"` // generics keep param names: "pkg.List[T]"
+	Name     string   `json:"name"`
+	Package  string   `json:"package"`
+	Kind     TypeKind `json:"kind"`
+	Exported bool     `json:"exported"`
+	Pos      string   `json:"pos"`
+
+	// Kind-specific; empty for the other kinds.
+	Fields     []Field  `json:"fields,omitempty"`     // struct
+	Embeds     []string `json:"embeds,omitempty"`     // interface: embedded interfaces
+	Target     string   `json:"target,omitempty"`     // alias: the aliased type
+	Underlying string   `json:"underlying,omitempty"` // other: e.g. "int", "func(string)"
+}
+
+type TypeKind string
+
+const (
+	StructType    TypeKind = "struct"
+	InterfaceType TypeKind = "interface"
+	AliasType     TypeKind = "alias"
+	OtherType     TypeKind = "other"
+)
+
+// Field is one field of a struct type.
+type Field struct {
+	ID       string `json:"id"` // owner type ID + "." + name
+	Name     string `json:"name"`
+	Type     string `json:"type"`
+	Embedded bool   `json:"embedded,omitempty"`
+	Pos      string `json:"pos"`
 }
 
 type Param struct {
@@ -54,6 +90,7 @@ const (
 
 // CallGraph holds the repo's functions and the calls made inside them.
 type CallGraph struct {
+	Types     []Type         `json:"types"`
 	Functions []Function     `json:"functions"`
 	Calls     []FunctionCall `json:"calls"`
 }
@@ -67,6 +104,7 @@ func BuildCallGraph(res *load.Result) *CallGraph {
 	b := &callGraphBuilder{
 		root:      res.Dir,
 		inits:     map[string]int{},
+		types:     []Type{},
 		functions: []Function{},
 		calls:     []FunctionCall{},
 	}
@@ -79,11 +117,14 @@ func BuildCallGraph(res *load.Result) *CallGraph {
 				case *ast.FuncDecl:
 					b.handleFuncDecl(d)
 				case *ast.GenDecl:
-					// TODO implement this shit
+					b.handleGenDecl(d)
 				}
 			}
 		}
 	}
+	slices.SortFunc(b.types, func(a, b Type) int {
+		return cmp.Compare(a.ID, b.ID)
+	})
 	slices.SortFunc(b.functions, func(a, b Function) int {
 		return cmp.Compare(a.ID, b.ID)
 	})
@@ -94,7 +135,7 @@ func BuildCallGraph(res *load.Result) *CallGraph {
 			cmp.Compare(a.Callee, b.Callee),
 		)
 	})
-	return &CallGraph{Functions: b.functions, Calls: b.calls}
+	return &CallGraph{Types: b.types, Functions: b.functions, Calls: b.calls}
 }
 
 // callGraphBuilder holds walk context and results.
@@ -104,6 +145,7 @@ type callGraphBuilder struct {
 
 	inits map[string]int // init funcs seen per file, for unique init IDs
 
+	types     []Type
 	functions []Function
 	calls     []FunctionCall
 }
@@ -132,6 +174,7 @@ func (b *callGraphBuilder) handleFuncDecl(funcDecl *ast.FuncDecl) {
 		Results:  handleFields(funcDecl.Type.Results, info),
 		Exported: funcDecl.Name.IsExported(),
 		Pos:      b.pos(funcDecl.Pos()),
+		Owner:    receiverOwner(fn),
 	})
 
 	// A nil *BlockStmt passed as ast.Node isn't == nil, so check here.
@@ -234,6 +277,130 @@ func (b *callGraphBuilder) args(exprs []ast.Expr) []Arg {
 		})
 	}
 	return args
+}
+
+// handleGenDecl dispatches a type, var or const declaration to its spec handler.
+func (b *callGraphBuilder) handleGenDecl(genDecl *ast.GenDecl) {
+	switch genDecl.Tok {
+	case token.TYPE:
+		for _, spec := range genDecl.Specs {
+			b.handleTypeSpec(spec.(*ast.TypeSpec)) // TYPE decls only hold TypeSpecs
+		}
+	case token.VAR, token.CONST:
+		// TODO: variables, and package-level calls (#7)
+	}
+	// token.IMPORT: nothing to record.
+}
+
+// handleTypeSpec records one named type, plus its interface methods.
+func (b *callGraphBuilder) handleTypeSpec(spec *ast.TypeSpec) {
+	tn, ok := b.pkg.TypesInfo.Defs[spec.Name].(*types.TypeName)
+	if !ok {
+		return
+	}
+	t := Type{
+		ID:       typeID(tn),
+		Name:     tn.Name(),
+		Package:  b.pkg.PkgPath,
+		Exported: tn.Exported(),
+		Pos:      b.pos(spec.Pos()),
+	}
+
+	if alias, ok := tn.Type().(*types.Alias); ok {
+		t.Kind = AliasType
+		t.Target = types.TypeString(alias.Rhs(), nil)
+		b.types = append(b.types, t)
+		return
+	}
+
+	switch u := tn.Type().Underlying().(type) {
+	case *types.Struct:
+		t.Kind, t.Fields = StructType, b.structFields(t.ID, u)
+	case *types.Interface:
+		t.Kind = InterfaceType
+		for e := range u.EmbeddedTypes() {
+			t.Embeds = append(t.Embeds, types.TypeString(e, nil))
+		}
+		for m := range u.ExplicitMethods() {
+			b.handleInterfaceMethod(m, t.ID)
+		}
+	default:
+		t.Kind, t.Underlying = OtherType, types.TypeString(u, nil)
+	}
+	b.types = append(b.types, t)
+}
+
+// structFields describes each field of st, a struct owned by the type ownerID.
+func (b *callGraphBuilder) structFields(ownerID string, st *types.Struct) []Field {
+	var fields []Field
+	for f := range st.Fields() {
+		fields = append(fields, Field{
+			ID:       ownerID + "." + f.Name(),
+			Name:     f.Name(),
+			Type:     types.TypeString(f.Type(), nil),
+			Embedded: f.Embedded(),
+			Pos:      b.pos(f.Pos()),
+		})
+	}
+	return fields
+}
+
+// handleInterfaceMethod records a method declared in an interface as a
+// Function owned by that interface. It has no body, so no calls.
+func (b *callGraphBuilder) handleInterfaceMethod(m *types.Func, ownerID string) {
+	sig := m.Signature()
+	b.functions = append(b.functions, Function{
+		ID:       m.FullName(),
+		Name:     m.Name(),
+		Package:  b.pkg.PkgPath,
+		Params:   tupleParams(sig.Params()),
+		Results:  tupleParams(sig.Results()),
+		Exported: m.Exported(),
+		Pos:      b.pos(m.Pos()),
+		Owner:    ownerID,
+	})
+}
+
+// receiverOwner is the ID of the type a method is declared on, or "" for a
+// plain function. *Store and aliases of Store both give Store's ID.
+func receiverOwner(fn *types.Func) string {
+	recv := fn.Signature().Recv()
+	if recv == nil {
+		return ""
+	}
+	t := recv.Type()
+	if p, ok := t.(*types.Pointer); ok {
+		t = p.Elem()
+	}
+	named, ok := types.Unalias(t).(*types.Named)
+	if !ok {
+		return "" // only possible in code with type errors
+	}
+	return typeID(named.Obj())
+}
+
+// typeID is "pkg.Name", with type param names for generics: "pkg.List[T]".
+// (types.TypeString would give "pkg.List[T any]", which method IDs don't use.)
+func typeID(tn *types.TypeName) string {
+	id := tn.Pkg().Path() + "." + tn.Name()
+	named, ok := tn.Type().(*types.Named)
+	if !ok || named.TypeParams().Len() == 0 {
+		return id
+	}
+	var params []string
+	for tp := range named.TypeParams().TypeParams() {
+		params = append(params, tp.Obj().Name())
+	}
+	return id + "[" + strings.Join(params, ", ") + "]"
+}
+
+// tupleParams converts a params or results tuple into Params.
+func tupleParams(t *types.Tuple) []Param {
+	var params []Param
+	for v := range t.Variables() {
+		params = append(params, Param{Name: v.Name(), Type: types.TypeString(v.Type(), nil)})
+	}
+	return params
 }
 
 // pos formats p as "file:line" relative to the repo root.
