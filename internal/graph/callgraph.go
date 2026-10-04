@@ -52,6 +52,18 @@ const (
 	OtherType     TypeKind = "other"
 )
 
+// Variable is a package-level var or const. Blank (_) vars get no node.
+type Variable struct {
+	ID       string `json:"id"` // "pkg.name"
+	Name     string `json:"name"`
+	Package  string `json:"package"`
+	Type     string `json:"type"` // consts may be untyped: "untyped int"
+	Const    bool   `json:"const,omitempty"`
+	Value    string `json:"value,omitempty"` // consts only: constant.Value.ExactString()
+	Exported bool   `json:"exported"`
+	Pos      string `json:"pos"`
+}
+
 // Field is one field of a struct type.
 type Field struct {
 	ID       string `json:"id"` // owner type ID + "." + name
@@ -91,6 +103,7 @@ const (
 // CallGraph holds the repo's functions and the calls made inside them.
 type CallGraph struct {
 	Types     []Type         `json:"types"`
+	Variables []Variable     `json:"variables"`
 	Functions []Function     `json:"functions"`
 	Calls     []FunctionCall `json:"calls"`
 }
@@ -105,6 +118,7 @@ func BuildCallGraph(res *load.Result) *CallGraph {
 		root:      res.Dir,
 		inits:     map[string]int{},
 		types:     []Type{},
+		variables: []Variable{},
 		functions: []Function{},
 		calls:     []FunctionCall{},
 	}
@@ -125,6 +139,9 @@ func BuildCallGraph(res *load.Result) *CallGraph {
 	slices.SortFunc(b.types, func(a, b Type) int {
 		return cmp.Compare(a.ID, b.ID)
 	})
+	slices.SortFunc(b.variables, func(a, b Variable) int {
+		return cmp.Compare(a.ID, b.ID)
+	})
 	slices.SortFunc(b.functions, func(a, b Function) int {
 		return cmp.Compare(a.ID, b.ID)
 	})
@@ -135,7 +152,7 @@ func BuildCallGraph(res *load.Result) *CallGraph {
 			cmp.Compare(a.Callee, b.Callee),
 		)
 	})
-	return &CallGraph{Types: b.types, Functions: b.functions, Calls: b.calls}
+	return &CallGraph{Types: b.types, Variables: b.variables, Functions: b.functions, Calls: b.calls}
 }
 
 // callGraphBuilder holds walk context and results.
@@ -146,6 +163,7 @@ type callGraphBuilder struct {
 	inits map[string]int // init funcs seen per file, for unique init IDs
 
 	types     []Type
+	variables []Variable
 	functions []Function
 	calls     []FunctionCall
 }
@@ -287,9 +305,42 @@ func (b *callGraphBuilder) handleGenDecl(genDecl *ast.GenDecl) {
 			b.handleTypeSpec(spec.(*ast.TypeSpec)) // TYPE decls only hold TypeSpecs
 		}
 	case token.VAR, token.CONST:
-		// TODO: variables, and package-level calls (#7)
+		for _, spec := range genDecl.Specs {
+			b.handleValueSpec(spec.(*ast.ValueSpec)) // VAR/CONST decls only hold ValueSpecs
+		}
 	}
 	// token.IMPORT: nothing to record.
+}
+
+// handleValueSpec records each var or const in spec, plus the calls in its
+// values, which run at package startup so their caller is the package (#7).
+func (b *callGraphBuilder) handleValueSpec(spec *ast.ValueSpec) {
+	for _, name := range spec.Names {
+		if name.Name == "_" {
+			continue // blank: no node, but its value's calls are still recorded below
+		}
+		obj := b.pkg.TypesInfo.Defs[name]
+		if obj == nil {
+			continue
+		}
+		v := Variable{
+			ID:       obj.Pkg().Path() + "." + obj.Name(),
+			Name:     obj.Name(),
+			Package:  b.pkg.PkgPath,
+			Type:     types.TypeString(obj.Type(), nil),
+			Exported: obj.Exported(),
+			Pos:      b.pos(name.Pos()),
+		}
+		if c, ok := obj.(*types.Const); ok {
+			v.Const, v.Value = true, c.Val().ExactString()
+		}
+		b.variables = append(b.variables, v)
+	}
+
+	// Only the values: walking the whole spec would also visit its type expression.
+	for _, value := range spec.Values {
+		b.handleFuncCalls(b.pkg.PkgPath, value)
+	}
 }
 
 // handleTypeSpec records one named type, plus its interface methods.
