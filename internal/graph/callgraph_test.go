@@ -150,6 +150,16 @@ func TestCallGraphFunctions(t *testing.T) {
 			Pos:      "model/kinds.go:15",
 			Owner:    tReadNamer,
 		},
+		{
+			ID: storePkg + ".load", Name: "load", Package: storePkg,
+			Results: []Param{{Name: "", Type: "int"}, {Name: "", Type: "error"}},
+			Pos:     "store/vars.go:13",
+		},
+		{
+			ID: storePkg + ".register", Name: "register", Package: storePkg,
+			Results: []Param{{Name: "", Type: "bool"}},
+			Pos:     "store/vars.go:19",
+		},
 	}
 
 	got := make(map[string]Function)
@@ -247,6 +257,58 @@ func TestCallGraphTypes(t *testing.T) {
 	}
 }
 
+func TestCallGraphVariables(t *testing.T) {
+	g := buildFixtureCallGraph(t)
+
+	v := func(name, typ, pos string) Variable {
+		return Variable{ID: storePkg + "." + name, Name: name, Package: storePkg, Type: typ, Pos: "store/vars.go:" + pos}
+	}
+	c := func(name, typ, value, pos string, exported bool) Variable {
+		x := v(name, typ, pos)
+		x.Const, x.Value, x.Exported = true, value, exported
+		return x
+	}
+	timeout := v("Timeout", "int", "6")
+	timeout.Exported = true
+
+	want := []Variable{
+		v("defaultStore", "*"+tStore, "4"),
+		timeout,
+		// var a, b = 1, 2: one node per name.
+		v("a", "int", "8"),
+		v("b", "int", "8"),
+		// var first, err = load(): one node per name, one call.
+		v("first", "int", "11"),
+		v("err", "error", "11"),
+		// No nodes for the two "_" vars on lines 16-17.
+		c("maxUsers", "untyped int", "100", "21", false),
+		c("greeting", "string", `"hi"`, "23", false),
+		// iota: Green and Blue have no value in the source, but the type checker knows it.
+		c("Red", "untyped int", "0", "26", true),
+		c("Green", "untyped int", "1", "27", true),
+		c("Blue", "untyped int", "2", "28", true),
+	}
+
+	got := make(map[string]Variable)
+	for _, x := range g.Variables {
+		got[x.ID] = x
+	}
+	for _, w := range want {
+		x, ok := got[w.ID]
+		if !ok {
+			t.Errorf("missing variable %s", w.ID)
+			continue
+		}
+		if x != w {
+			t.Errorf("variable %s:\n got  %+v\n want %+v", w.ID, x, w)
+		}
+		delete(got, w.ID)
+	}
+	for id := range got {
+		t.Errorf("unexpected variable %s", id)
+	}
+}
+
 func TestCallGraphCalls(t *testing.T) {
 	g := buildFixtureCallGraph(t)
 
@@ -292,6 +354,12 @@ func TestCallGraphCalls(t *testing.T) {
 			Args: []Arg{{`"init 1"`, "string"}}},
 		{Caller: idInit2, Callee: idGreet, CallerPosition: "main.go:66", CallKind: StaticCall,
 			Args: []Arg{{`"init 2"`, "string"}}},
+		// Package-level calls: the caller is the package itself (#7).
+		{Caller: storePkg, Callee: idNew, CallerPosition: "store/vars.go:4", CallKind: StaticCall},
+		{Caller: storePkg, Callee: storePkg + ".load", CallerPosition: "store/vars.go:11", CallKind: StaticCall},
+		// var _ = register() has no variable node, but the call is still recorded.
+		{Caller: storePkg, Callee: storePkg + ".register", CallerPosition: "store/vars.go:17", CallKind: StaticCall},
+		// Nothing for var _ Getter = (*Store)(nil): a conversion, not a call.
 	}
 
 	got := make(map[string]bool)
@@ -318,6 +386,9 @@ func TestCallGraphIsSorted(t *testing.T) {
 	}
 	if !slices.IsSortedFunc(g.Types, func(a, b Type) int { return cmp.Compare(a.ID, b.ID) }) {
 		t.Error("Types are not sorted by ID")
+	}
+	if !slices.IsSortedFunc(g.Variables, func(a, b Variable) int { return cmp.Compare(a.ID, b.ID) }) {
+		t.Error("Variables are not sorted by ID")
 	}
 	if !slices.IsSortedFunc(g.Calls, func(a, b FunctionCall) int {
 		return cmp.Or(cmp.Compare(a.Caller, b.Caller), cmp.Compare(a.CallerPosition, b.CallerPosition), cmp.Compare(a.Callee, b.Callee))
