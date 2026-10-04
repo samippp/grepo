@@ -1,5 +1,5 @@
 # grepo
-
+Grep + Repo
 Paste a GitHub link to a Go repository and get a browsable wiki showing how data flows between its packages.
 
 grepo has two front ends that share one analysis pipeline:
