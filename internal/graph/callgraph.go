@@ -126,14 +126,15 @@ type CallGraph struct {
 //   - dynamic calls have no Callee; one edge per call site; output sorted
 func BuildCallGraph(res *load.Result) *CallGraph {
 	b := &callGraphBuilder{
-		root:      res.Dir,
-		inits:     map[string]int{},
+		root:  res.Dir,
+		inits: map[string]int{},
+
 		types:     []Type{},
 		variables: []Variable{},
+		functions: []Function{},
+		calls:     []FunctionCall{},
 
 		implementations: []Implementation{},
-		functions:       []Function{},
-		calls:           []FunctionCall{},
 	}
 
 	for _, pkg := range res.Packages {
