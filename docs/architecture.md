@@ -36,7 +36,7 @@ CallGraph
 
 ### Nodes
 
-**`Type`**: every named type in the repo, one struct with a kind.
+**`Type`**: every named type in the repo, including types declared inside functions, one struct with a kind.
 
 ```
 ID, Name, Package, Kind, Exported, Pos
@@ -116,7 +116,8 @@ Example: what can `lookup` reach through `g.Get(1)`?
 BuildCallGraph
   for each package → file → declaration:
     FuncDecl → handleFuncDecl      Function node (ID via assignFuncDeclID, Owner via receiverOwner)
-                └ addCalls  ast.Inspect the body → callee() / callKind() / args()
+                └ walkBody  ast.Inspect the body: calls → addCall → callee() / callKind() / args();
+                            local TYPE decls → assignLocalTypeID + handleTypeSpec
     GenDecl  → handleGenDecl       switch on token:
                 ├ TYPE      → handleTypeSpec   Type node; struct → structFields;
                 │                              interface → embeds + addInterfaceMethod;
@@ -133,10 +134,11 @@ BuildCallGraph
 | Thing | Format | Example |
 |---|---|---|
 | Function | `FullName()` | `example.com/simple.greet` |
-| Method | `(receiver).name`, receiver = the declaring type's ID (`graph.FuncID`) | `(*…store.Store).Get` |
+| Method | `(receiver).name`, receiver = the declaring type's ID (`CallGraph.FuncID`) | `(*…store.Store).Get` |
 | Interface method | `(interface).name` | `(…store.Getter).Get` |
 | `init` | `pkg.init@file#n`, numbered per file | `…simple.init@main.go#2` |
-| Type | `pkg.Name` (`graph.TypeID`); generics keep param names, not constraints; built-ins have no package | `…simple.List[T]`, `error` |
+| Type | `pkg.Name` (`CallGraph.TypeID`); generics keep param names, not constraints; built-ins have no package | `…simple.List[T]`, `error` |
+| Local type | enclosing function's ID + `.name#n`, numbered per name in source order | `…simple.save.result#2` |
 | Field | type ID + `.` + name | `…store.Store.users` |
 | Variable | `pkg.name` | `…store.defaultStore` |
 | Position | `file:line`, relative to the repo root | `store/store.go:23` |
@@ -157,6 +159,8 @@ BuildCallGraph
 - `init` functions get file + position (`@file#n`); inserting an `init` above another shifts its number (accepted: nothing can call `init`, so no edges break).
 - Method IDs use the type's ID as the receiver (consistent with `Owner`; normalizes renamed type parameters and constraints).
 - Call positions are `file:line` at the start of the call expression.
+- Local types: `parent.name#n`, always numbered. Chosen over `pkg.name@file:line` because the ID says where the type lives (useful to the MCP) and survives line shifts (wiki URLs). The parent is `walkBody`'s caller: the enclosing top-level function, or the package for package-level func literals. Types in closures belong to the enclosing function until closures get nodes (#13), which will rename them once.
+- Local type IDs are assigned during the walk and kept in an `idTable` that `funcID` / `typeID` consult; the graph keeps it, so `CallGraph.FuncID` / `TypeID` work for consumers like vtadiff. A local type missing from the table gets `#?` rather than silently taking a package-level ID.
 
 ### Functions and calls
 - A method is a `Function` with a receiver, not a separate struct.
@@ -181,6 +185,7 @@ BuildCallGraph
 - A method-name index (first method as key) picks candidates; `types.Implements` decides.
 
 ### Variables
+- Package level only: local `var` / `const` get no node (an LLM reads function bodies from source).
 - `var` and `const` share one struct, with a `Const` flag. Consts store exact values; untyped consts keep `untyped int`.
 - Blank (`_`) variables get no node, but calls in their values are still recorded.
 - Package-level calls use the package as the caller: an existing node, nothing synthetic.
@@ -198,4 +203,5 @@ BuildCallGraph
 | #8: type arguments on generic calls | deferred to M5 |
 | #13: closure nodes | open; likely with M5 |
 | #14: implementations of outside interfaces | open |
-| Types declared inside functions | not walked: no node, so calls to their methods have a callee with no node (e.g. caddy's `acmeCapable`) |
+| Type strings of local types | `types.TypeString` prints a local `result` as `pkg.result`, so a param or field of a local type doesn't show its `#n` ID |
+| M4: explanation cache | key on a hash of the node's source, not its ID: a stable ID doesn't mean unchanged code |
