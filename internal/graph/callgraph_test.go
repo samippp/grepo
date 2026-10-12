@@ -43,6 +43,11 @@ const (
 	tID        = modelPkg + ".ID"
 	tUserID    = modelPkg + ".UserID"
 	tReadNamer = modelPkg + ".ReadNamer"
+	tCache     = storePkg + ".Cache"
+	tNamer     = modelPkg + ".Namer"
+	tLabel     = modelPkg + ".Label"
+	tBadge     = modelPkg + ".Badge"
+	tAny       = modelPkg + ".Any"
 )
 
 func buildFixtureCallGraph(t *testing.T) *CallGraph {
@@ -160,6 +165,31 @@ func TestCallGraphFunctions(t *testing.T) {
 			Results: []Param{{Name: "", Type: "bool"}},
 			Pos:     "store/vars.go:19",
 		},
+		{
+			ID: "(" + tCache + ").Get", Name: "Get", Package: storePkg,
+			Receiver: &Param{Name: "c", Type: tCache},
+			Params:   []Param{{Name: "id", Type: "int"}},
+			Results:  []Param{{Name: "", Type: tUser}},
+			Exported: true,
+			Pos:      "store/cache.go:9",
+			Owner:    tCache,
+		},
+		{
+			ID: "(" + tNamer + ").Name", Name: "Name", Package: modelPkg,
+			Results:  []Param{{Name: "", Type: "string"}},
+			Exported: true,
+			Pos:      "model/kinds.go:24",
+			Owner:    tNamer,
+		},
+		// Unnamed receiver: func (Label) Name().
+		{
+			ID: "(" + tLabel + ").Name", Name: "Name", Package: modelPkg,
+			Receiver: &Param{Name: "", Type: tLabel},
+			Results:  []Param{{Name: "", Type: "string"}},
+			Exported: true,
+			Pos:      "model/kinds.go:28",
+			Owner:    tLabel,
+		},
 	}
 
 	got := make(map[string]Function)
@@ -235,6 +265,27 @@ func TestCallGraphTypes(t *testing.T) {
 			ID: tReadNamer, Name: "ReadNamer", Package: modelPkg, Kind: InterfaceType, Exported: true,
 			Pos: "model/kinds.go:13", Embeds: []string{"io.Reader"},
 		},
+		{
+			ID: tCache, Name: "Cache", Package: storePkg, Kind: StructType, Exported: true,
+			Pos: "store/cache.go:7",
+		},
+		{
+			ID: tNamer, Name: "Namer", Package: modelPkg, Kind: InterfaceType, Exported: true,
+			Pos: "model/kinds.go:24",
+		},
+		{
+			ID: tLabel, Name: "Label", Package: modelPkg, Kind: StructType, Exported: true,
+			Pos: "model/kinds.go:26",
+		},
+		{
+			ID: tBadge, Name: "Badge", Package: modelPkg, Kind: StructType, Exported: true,
+			Pos:    "model/kinds.go:30",
+			Fields: []Field{{ID: tBadge + ".Label", Name: "Label", Type: tLabel, Embedded: true, Pos: "model/kinds.go:30"}},
+		},
+		{
+			ID: tAny, Name: "Any", Package: modelPkg, Kind: InterfaceType, Exported: true,
+			Pos: "model/kinds.go:33",
+		},
 	}
 
 	got := make(map[string]Type)
@@ -254,6 +305,37 @@ func TestCallGraphTypes(t *testing.T) {
 	}
 	for id := range got {
 		t.Errorf("unexpected type %s", id)
+	}
+}
+
+func TestCallGraphImplementations(t *testing.T) {
+	g := buildFixtureCallGraph(t)
+
+	want := []Implementation{
+		// Value receiver: Cache and *Cache both implement Getter.
+		{Type: tCache, Interface: tGetter},
+		// Pointer receiver: only *Store implements Getter.
+		{Type: tStore, Interface: tGetter, PointerOnly: true},
+		{Type: tLabel, Interface: tNamer},
+		// Badge has Name only through its embedded Label (a promoted method).
+		{Type: tBadge, Interface: tNamer},
+		// Nothing for Any: empty interfaces are skipped.
+		// Not listed: interfaces themselves, generic List[T] (no type args to check),
+		// and interfaces outside the repo (UserID implements fmt.Stringer).
+	}
+
+	got := make(map[Implementation]bool)
+	for _, im := range g.Implementations {
+		got[im] = true
+	}
+	for _, w := range want {
+		if !got[w] {
+			t.Errorf("missing implementation %+v", w)
+		}
+		delete(got, w)
+	}
+	for im := range got {
+		t.Errorf("unexpected implementation %+v", im)
 	}
 }
 
@@ -389,6 +471,11 @@ func TestCallGraphIsSorted(t *testing.T) {
 	}
 	if !slices.IsSortedFunc(g.Variables, func(a, b Variable) int { return cmp.Compare(a.ID, b.ID) }) {
 		t.Error("Variables are not sorted by ID")
+	}
+	if !slices.IsSortedFunc(g.Implementations, func(a, b Implementation) int {
+		return cmp.Or(cmp.Compare(a.Type, b.Type), cmp.Compare(a.Interface, b.Interface))
+	}) {
+		t.Error("Implementations are not sorted by Type, then Interface")
 	}
 	if !slices.IsSortedFunc(g.Calls, func(a, b FunctionCall) int {
 		return cmp.Or(cmp.Compare(a.Caller, b.Caller), cmp.Compare(a.CallerPosition, b.CallerPosition), cmp.Compare(a.Callee, b.Callee))
