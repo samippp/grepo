@@ -337,7 +337,7 @@ func (b *callGraphBuilder) handleValueSpec(spec *ast.ValueSpec) {
 			continue
 		}
 		v := Variable{
-			ID:       obj.Pkg().Path() + "." + obj.Name(),
+			ID:       VarID(obj),
 			Name:     obj.Name(),
 			Package:  b.pkg.PkgPath,
 			Type:     types.TypeString(obj.Type(), nil),
@@ -386,7 +386,7 @@ func (b *callGraphBuilder) handleTypeSpec(spec *ast.TypeSpec) {
 			t.Embeds = append(t.Embeds, types.TypeString(e, nil))
 		}
 		for m := range u.ExplicitMethods() {
-			b.handleInterfaceMethod(m, t.ID)
+			b.handleInterfaceMethod(m)
 		}
 	default:
 		t.Kind, t.Underlying = OtherType, types.TypeString(u, nil)
@@ -467,7 +467,7 @@ func (b *callGraphBuilder) structFields(ownerID string, st *types.Struct) []Fiel
 	var fields []Field
 	for f := range st.Fields() {
 		fields = append(fields, Field{
-			ID:       ownerID + "." + f.Name(),
+			ID:       FieldID(ownerID, f.Name()),
 			Name:     f.Name(),
 			Type:     types.TypeString(f.Type(), nil),
 			Embedded: f.Embedded(),
@@ -479,9 +479,9 @@ func (b *callGraphBuilder) structFields(ownerID string, st *types.Struct) []Fiel
 
 // handleInterfaceMethod records a method declared in an interface as a
 // Function owned by that interface. It has no body, so no calls.
-func (b *callGraphBuilder) handleInterfaceMethod(m *types.Func, ownerID string) {
+func (b *callGraphBuilder) handleInterfaceMethod(m *types.Func) {
 	f := b.newFunction(m, FuncID(m))
-	f.Receiver, f.Owner = nil, ownerID // interface methods have no written receiver
+	f.Receiver = nil // interface methods have no written receiver
 	b.functions = append(b.functions, f)
 }
 
@@ -561,6 +561,16 @@ func TypeID(tn *types.TypeName) string {
 		params = append(params, tp.Obj().Name())
 	}
 	return id + "[" + strings.Join(params, ", ") + "]"
+}
+
+// VarID is "pkg.name" for a package-level var or const.
+func VarID(obj types.Object) string {
+	return obj.Pkg().Path() + "." + obj.Name()
+}
+
+// FieldID is the owning type's ID plus the field name: "pkg.Store.users".
+func FieldID(ownerID, name string) string {
+	return ownerID + "." + name
 }
 
 // tupleParams converts a params or results tuple into Params.
