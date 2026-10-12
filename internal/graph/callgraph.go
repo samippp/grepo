@@ -120,7 +120,7 @@ type CallGraph struct {
 }
 
 // BuildCallGraph records every function and call in res. Rules (see tests):
-//   - IDs from FullName(), types from types.TypeString(t, nil)
+//   - IDs from FuncID / TypeID, types from types.TypeString(t, nil)
 //   - closure calls belong to the enclosing func; built-ins/conversions aren't calls
 //   - external calls kept; interface calls point at the interface method
 //   - dynamic calls have no Callee; one edge per call site; output sorted
@@ -231,11 +231,11 @@ func (b *callGraphBuilder) handleFuncDecl(funcDecl *ast.FuncDecl) {
 	}
 }
 
-// funcID is fn's FullName, except each init gets "pkg.init@file#n", since a
+// funcID is FuncID(fn), except each init gets "pkg.init@file#n", since a
 // package can have several. Call once per declaration: it counts inits.
 func (b *callGraphBuilder) funcID(funcDecl *ast.FuncDecl, fn *types.Func) string {
 	if funcDecl.Recv != nil || funcDecl.Name.Name != "init" {
-		return fn.FullName()
+		return FuncID(fn)
 	}
 	file := rel(b.root, b.pkg.Fset.Position(funcDecl.Pos()).Filename)
 	b.inits[file]++
@@ -260,7 +260,7 @@ func (b *callGraphBuilder) handleFuncCalls(callerID string, root ast.Node) {
 			Args:           b.args(call.Args),
 		}
 		if callee != nil {
-			c.Callee = callee.FullName()
+			c.Callee = FuncID(callee)
 		}
 		b.calls = append(b.calls, c)
 		return true // closures and arguments can contain calls
@@ -380,7 +380,7 @@ func (b *callGraphBuilder) handleTypeSpec(spec *ast.TypeSpec) {
 		return
 	}
 	t := Type{
-		ID:       typeID(tn),
+		ID:       TypeID(tn),
 		Name:     tn.Name(),
 		Package:  b.pkg.PkgPath,
 		Exported: tn.Exported(),
@@ -432,8 +432,8 @@ func (b *callGraphBuilder) addImplementations() {
 				continue
 			}
 			b.implementations = append(b.implementations, Implementation{
-				Type:        typeID(c),
-				Interface:   typeID(e.name),
+				Type:        TypeID(c),
+				Interface:   TypeID(e.name),
 				PointerOnly: !value, // *T always has T's methods, so only the reverse can fail
 			})
 		}
@@ -499,7 +499,7 @@ func (b *callGraphBuilder) structFields(ownerID string, st *types.Struct) []Fiel
 func (b *callGraphBuilder) handleInterfaceMethod(m *types.Func, ownerID string) {
 	sig := m.Signature()
 	b.functions = append(b.functions, Function{
-		ID:       m.FullName(),
+		ID:       FuncID(m),
 		Name:     m.Name(),
 		Package:  b.pkg.PkgPath,
 		Params:   tupleParams(sig.Params()),
@@ -510,27 +510,53 @@ func (b *callGraphBuilder) handleInterfaceMethod(m *types.Func, ownerID string) 
 	})
 }
 
+// FuncID is the ID of a function or method. Plain functions use FullName.
+// Methods use "(T).name" or "(*T).name", where T is the declaring type's
+// TypeID: no constraints, the declaration's param names, aliases resolved.
+// Generic instances map to their declaration.
+func FuncID(fn *types.Func) string {
+	fn = fn.Origin()
+	named, pointer := receiver(fn)
+	if named == nil {
+		return fn.FullName()
+	}
+	star := ""
+	if pointer {
+		star = "*"
+	}
+	return "(" + star + TypeID(named.Obj()) + ")." + fn.Name()
+}
+
 // receiverOwner is the ID of the type a method is declared on, or "" for a
 // plain function. *Store and aliases of Store both give Store's ID.
 func receiverOwner(fn *types.Func) string {
+	if named, _ := receiver(fn); named != nil {
+		return TypeID(named.Obj())
+	}
+	return ""
+}
+
+// receiver is the named type fn is a method of, and whether the receiver is a
+// pointer. It's nil for plain functions (or code with type errors).
+func receiver(fn *types.Func) (named *types.Named, pointer bool) {
 	recv := fn.Signature().Recv()
 	if recv == nil {
-		return ""
+		return nil, false
 	}
 	t := recv.Type()
 	if p, ok := t.(*types.Pointer); ok {
-		t = p.Elem()
+		t, pointer = p.Elem(), true
 	}
-	named, ok := types.Unalias(t).(*types.Named)
-	if !ok {
-		return "" // only possible in code with type errors
-	}
-	return typeID(named.Obj())
+	named, _ = types.Unalias(t).(*types.Named)
+	return named, pointer
 }
 
-// typeID is "pkg.Name", with type param names for generics: "pkg.List[T]".
+// TypeID is "pkg.Name", with type param names for generics: "pkg.List[T]".
 // (types.TypeString would give "pkg.List[T any]", which method IDs don't use.)
-func typeID(tn *types.TypeName) string {
+func TypeID(tn *types.TypeName) string {
+	if tn.Pkg() == nil {
+		return tn.Name() // built-in, e.g. error
+	}
 	id := tn.Pkg().Path() + "." + tn.Name()
 	named, ok := tn.Type().(*types.Named)
 	if !ok || named.TypeParams().Len() == 0 {

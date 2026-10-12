@@ -66,3 +66,13 @@ func init() { greet("init 1") }
 func init() { greet("init 2") }
 
 func (l *List[T]) init() {}
+
+// Method IDs use the type's ID: no constraints, declared param names.
+type Source[T any] interface{ Next() T }
+
+func drain(s Source[int]) { s.Next() }
+
+func (l *List[E]) Len() int { return len(l.items) }
+
+// error is a built-in type with no package.
+func describe(err error) string { return err.Error() }

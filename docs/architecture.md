@@ -133,15 +133,15 @@ BuildCallGraph
 | Thing | Format | Example |
 |---|---|---|
 | Function | `FullName()` | `example.com/simple.greet` |
-| Method | `(receiver).name`, receiver = the type's ID | `(*…store.Store).Get` |
+| Method | `(receiver).name`, receiver = the declaring type's ID (`graph.FuncID`) | `(*…store.Store).Get` |
 | Interface method | `(interface).name` | `(…store.Getter).Get` |
 | `init` | `pkg.init@file#n`, numbered per file | `…simple.init@main.go#2` |
-| Type | `pkg.Name`; generics keep param names, not constraints | `…simple.List[T]` |
+| Type | `pkg.Name` (`graph.TypeID`); generics keep param names, not constraints; built-ins have no package | `…simple.List[T]`, `error` |
 | Field | type ID + `.` + name | `…store.Store.users` |
 | Variable | `pkg.name` | `…store.defaultStore` |
 | Position | `file:line`, relative to the repo root | `store/store.go:23` |
 
-`(X).Name` follows Go's method-expression syntax: `(Getter).Get` is valid Go.
+`(X).Name` follows Go's method-expression syntax: `(Getter).Get` is valid Go. Because the receiver is the type's ID, a method's ID always matches its `Owner`, even when the receiver renames type parameters (`func (l *List[E])` → `List[T]`) or is written through an alias (`func (s *S)` with `S = Store` → `Store`).
 
 ## 6. Design decisions
 
@@ -195,7 +195,7 @@ BuildCallGraph
 
 | Item | Status |
 |---|---|
-| Method IDs via the type ID | decided; not yet implemented |
 | #8: type arguments on generic calls | deferred to M5 |
 | #13: closure nodes | open; likely with M5 |
 | #14: implementations of outside interfaces | open |
+| Types declared inside functions | not walked: no node, so calls to their methods have a callee with no node (e.g. caddy's `acmeCapable`) |

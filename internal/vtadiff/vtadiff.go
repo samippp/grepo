@@ -332,7 +332,7 @@ func (t *translator) calleeID(fn *ssa.Function) (id, reason string) {
 	if obj.Name() == "init" && obj.Signature().Recv() == nil {
 		return "", "package initializer calls an init function"
 	}
-	return obj.Origin().FullName(), ""
+	return graph.FuncID(obj), ""
 }
 
 // funcID is grepo's ID for a declared function: FullName, except init
@@ -346,7 +346,7 @@ func (t *translator) funcID(fn *ssa.Function) (string, bool) {
 		id, ok := t.initByPos[t.pos(fn.Pos())]
 		return id, ok
 	}
-	return obj.Origin().FullName(), true
+	return graph.FuncID(obj), true
 }
 
 // pos formats p as "file:line" relative to the repo root, like grepo does.
@@ -359,8 +359,7 @@ func (t *translator) pos(p token.Pos) string {
 	return filepath.ToSlash(r) + ":" + strconv.Itoa(position.Line)
 }
 
-// recvTypeID is the type ID of fn's receiver (pointer and aliases removed),
-// in grepo's format. Mirrors graph.typeID.
+// recvTypeID is the type ID of fn's receiver (pointer and aliases removed).
 func recvTypeID(fn *ssa.Function) string {
 	var recv *types.Var
 	if fn.Signature.Recv() != nil {
@@ -379,16 +378,7 @@ func recvTypeID(fn *ssa.Function) string {
 	if !ok {
 		return ""
 	}
-	tn := named.Origin().Obj()
-	id := tn.Pkg().Path() + "." + tn.Name()
-	if tps := named.Origin().TypeParams(); tps.Len() > 0 {
-		var names []string
-		for tp := range tps.TypeParams() {
-			names = append(names, tp.Obj().Name())
-		}
-		id += "[" + strings.Join(names, ", ") + "]"
-	}
-	return id
+	return graph.TypeID(named.Origin().Obj())
 }
 
 func site(caller, pos string) string { return caller + "@" + pos }
