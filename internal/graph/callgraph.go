@@ -64,6 +64,15 @@ type Variable struct {
 	Pos      string `json:"pos"`
 }
 
+// Implementation records that a concrete type satisfies an interface. Both
+// are repo types. Read it in either direction: what Store implements, or
+// what implements Getter.
+type Implementation struct {
+	Type        string `json:"type"`                  // concrete type ID
+	Interface   string `json:"interface"`             // interface type ID
+	PointerOnly bool   `json:"pointerOnly,omitempty"` // only *Type implements it
+}
+
 // Field is one field of a struct type.
 type Field struct {
 	ID       string `json:"id"` // owner type ID + "." + name
@@ -106,6 +115,8 @@ type CallGraph struct {
 	Variables []Variable     `json:"variables"`
 	Functions []Function     `json:"functions"`
 	Calls     []FunctionCall `json:"calls"`
+
+	Implementations []Implementation `json:"implementations"`
 }
 
 // BuildCallGraph records every function and call in res. Rules (see tests):
@@ -119,8 +130,10 @@ func BuildCallGraph(res *load.Result) *CallGraph {
 		inits:     map[string]int{},
 		types:     []Type{},
 		variables: []Variable{},
-		functions: []Function{},
-		calls:     []FunctionCall{},
+
+		implementations: []Implementation{},
+		functions:       []Function{},
+		calls:           []FunctionCall{},
 	}
 
 	for _, pkg := range res.Packages {
@@ -136,6 +149,8 @@ func BuildCallGraph(res *load.Result) *CallGraph {
 			}
 		}
 	}
+	b.addImplementations()
+
 	slices.SortFunc(b.types, func(a, b Type) int {
 		return cmp.Compare(a.ID, b.ID)
 	})
@@ -145,6 +160,9 @@ func BuildCallGraph(res *load.Result) *CallGraph {
 	slices.SortFunc(b.functions, func(a, b Function) int {
 		return cmp.Compare(a.ID, b.ID)
 	})
+	slices.SortFunc(b.implementations, func(a, b Implementation) int {
+		return cmp.Or(cmp.Compare(a.Type, b.Type), cmp.Compare(a.Interface, b.Interface))
+	})
 	slices.SortFunc(b.calls, func(a, b FunctionCall) int {
 		return cmp.Or(
 			cmp.Compare(a.Caller, b.Caller),
@@ -152,7 +170,13 @@ func BuildCallGraph(res *load.Result) *CallGraph {
 			cmp.Compare(a.Callee, b.Callee),
 		)
 	})
-	return &CallGraph{Types: b.types, Variables: b.variables, Functions: b.functions, Calls: b.calls}
+	return &CallGraph{
+		Types:           b.types,
+		Variables:       b.variables,
+		Functions:       b.functions,
+		Calls:           b.calls,
+		Implementations: b.implementations,
+	}
 }
 
 // callGraphBuilder holds walk context and results.
@@ -166,6 +190,12 @@ type callGraphBuilder struct {
 	variables []Variable
 	functions []Function
 	calls     []FunctionCall
+
+	// Kept during the walk for computing implementations afterwards.
+	concrete   []*types.TypeName
+	interfaces []*types.TypeName
+
+	implementations []Implementation
 }
 
 func (b *callGraphBuilder) handleFuncDecl(funcDecl *ast.FuncDecl) {
@@ -379,6 +409,74 @@ func (b *callGraphBuilder) handleTypeSpec(spec *ast.TypeSpec) {
 		t.Kind, t.Underlying = OtherType, types.TypeString(u, nil)
 	}
 	b.types = append(b.types, t)
+
+	// Kept for addImplementations. Generics can't be checked without type args.
+	if !isGeneric(tn) {
+		if t.Kind == InterfaceType {
+			b.interfaces = append(b.interfaces, tn)
+		} else {
+			b.concrete = append(b.concrete, tn)
+		}
+	}
+}
+
+// addImplementations records which concrete repo types satisfy which repo
+// interfaces. It runs after the walk: the two can be in different packages.
+// Each type is only checked against interfaces indexed under one of its methods.
+func (b *callGraphBuilder) addImplementations() {
+	byMethod := indexInterfaces(b.interfaces)
+	for _, c := range b.concrete {
+		for _, e := range candidateInterfaces(c, byMethod) {
+			value := types.Implements(c.Type(), e.iface)
+			if !value && !types.Implements(types.NewPointer(c.Type()), e.iface) {
+				continue
+			}
+			b.implementations = append(b.implementations, Implementation{
+				Type:        typeID(c),
+				Interface:   typeID(e.name),
+				PointerOnly: !value, // *T always has T's methods, so only the reverse can fail
+			})
+		}
+	}
+}
+
+// ifaceEntry is an interface in the method index.
+type ifaceEntry struct {
+	name  *types.TypeName  // for its ID
+	iface *types.Interface // for types.Implements
+}
+
+// indexInterfaces files each interface under its first method name: a type
+// without that method can't implement it. Empty interfaces are skipped, since
+// every type implements them.
+func indexInterfaces(interfaces []*types.TypeName) map[string][]ifaceEntry {
+	byMethod := map[string][]ifaceEntry{}
+	for _, tn := range interfaces {
+		iface := tn.Type().Underlying().(*types.Interface)
+		if iface.NumMethods() == 0 {
+			continue
+		}
+		key := iface.Method(0).Name() // methods are sorted, so this is stable
+		byMethod[key] = append(byMethod[key], ifaceEntry{tn, iface})
+	}
+	return byMethod
+}
+
+// candidateInterfaces returns the interfaces c might implement. It looks at
+// *c's method set, which includes value-receiver and promoted methods. Each
+// interface has one key, so none is returned twice.
+func candidateInterfaces(c *types.TypeName, byMethod map[string][]ifaceEntry) []ifaceEntry {
+	var out []ifaceEntry
+	for sel := range types.NewMethodSet(types.NewPointer(c.Type())).Methods() {
+		out = append(out, byMethod[sel.Obj().Name()]...)
+	}
+	return out
+}
+
+// isGeneric reports whether tn has type parameters, like List[T].
+func isGeneric(tn *types.TypeName) bool {
+	named, ok := tn.Type().(*types.Named)
+	return ok && named.TypeParams().Len() > 0
 }
 
 // structFields describes each field of st, a struct owned by the type ownerID.

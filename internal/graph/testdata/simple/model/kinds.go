@@ -19,3 +19,15 @@ type Tagged struct {
 	User
 	Tag string
 }
+
+// Badge implements Namer only through the Name method promoted from Label.
+type Namer interface{ Name() string }
+
+type Label struct{}
+
+func (Label) Name() string { return "label" }
+
+type Badge struct{ Label }
+
+// Every type implements an empty interface, so it gets no implementations.
+type Any interface{}
