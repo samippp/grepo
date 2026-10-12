@@ -199,31 +199,14 @@ type callGraphBuilder struct {
 }
 
 func (b *callGraphBuilder) handleFuncDecl(funcDecl *ast.FuncDecl) {
-	info := b.pkg.TypesInfo
-
 	// Missing only if the package has type errors; skip it.
-	fn, ok := info.Defs[funcDecl.Name].(*types.Func)
+	fn, ok := b.pkg.TypesInfo.Defs[funcDecl.Name].(*types.Func)
 	if !ok {
 		return
 	}
 
-	var recv *Param
-	if rs := handleFields(funcDecl.Recv, info); len(rs) > 0 {
-		recv = &rs[0]
-	}
-
 	id := b.assignFuncDeclID(funcDecl, fn)
-	b.functions = append(b.functions, Function{
-		ID:       id,
-		Name:     funcDecl.Name.Name,
-		Package:  b.pkg.PkgPath,
-		Receiver: recv,
-		Params:   handleFields(funcDecl.Type.Params, info),
-		Results:  handleFields(funcDecl.Type.Results, info),
-		Exported: funcDecl.Name.IsExported(),
-		Pos:      b.pos(funcDecl.Pos()),
-		Owner:    receiverOwner(fn),
-	})
+	b.functions = append(b.functions, b.newFunction(fn, id))
 
 	// A nil *BlockStmt passed as ast.Node isn't == nil, so check here.
 	if funcDecl.Body != nil {
@@ -497,17 +480,28 @@ func (b *callGraphBuilder) structFields(ownerID string, st *types.Struct) []Fiel
 // handleInterfaceMethod records a method declared in an interface as a
 // Function owned by that interface. It has no body, so no calls.
 func (b *callGraphBuilder) handleInterfaceMethod(m *types.Func, ownerID string) {
-	sig := m.Signature()
-	b.functions = append(b.functions, Function{
-		ID:       FuncID(m),
-		Name:     m.Name(),
+	f := b.newFunction(m, FuncID(m))
+	f.Receiver, f.Owner = nil, ownerID // interface methods have no written receiver
+	b.functions = append(b.functions, f)
+}
+
+// newFunction builds the Function node for fn, with the given ID.
+func (b *callGraphBuilder) newFunction(fn *types.Func, id string) Function {
+	sig := fn.Signature()
+	f := Function{
+		ID:       id,
+		Name:     fn.Name(),
 		Package:  b.pkg.PkgPath,
 		Params:   tupleParams(sig.Params()),
 		Results:  tupleParams(sig.Results()),
-		Exported: m.Exported(),
-		Pos:      b.pos(m.Pos()),
-		Owner:    ownerID,
-	})
+		Exported: fn.Exported(),
+		Pos:      b.pos(fn.Pos()),
+		Owner:    receiverOwner(fn),
+	}
+	if recv := sig.Recv(); recv != nil {
+		f.Receiver = &Param{Name: recv.Name(), Type: types.TypeString(recv.Type(), nil)}
+	}
+	return f
 }
 
 // FuncID is the ID of a function or method. Plain functions use FullName.
@@ -582,26 +576,6 @@ func tupleParams(t *types.Tuple) []Param {
 func (b *callGraphBuilder) pos(p token.Pos) string {
 	position := b.pkg.Fset.Position(p)
 	return rel(b.root, position.Filename) + ":" + strconv.Itoa(position.Line)
-}
-
-// Parses a field list into a list of Params
-func handleFields(fields *ast.FieldList, info *types.Info) []Param {
-	if fields == nil {
-		return nil
-	}
-	var params []Param
-	for _, f := range fields.List {
-		typ := types.TypeString(info.TypeOf(f.Type), nil)
-
-		if len(f.Names) == 0 { // f.Names is []*ast.Ident
-			params = append(params, Param{Type: typ})
-			continue
-		}
-		for _, name := range f.Names { // name is *ast.Ident
-			params = append(params, Param{Name: name.Name, Type: typ})
-		}
-	}
-	return params
 }
 
 // CountByKind counts calls per kind. The StaticCall share is the resolution rate.
