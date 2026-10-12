@@ -57,6 +57,7 @@ func newRootCmd(a *app) *cobra.Command {
 	root.PersistentFlags().StringVar(&logFormat, "log-format", "text", "log format: text or json")
 
 	root.AddCommand(newAnalyzeCmd(a))
+	root.AddCommand(newVTADiffCmd(a))
 	return root
 }
 
