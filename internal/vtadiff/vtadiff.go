@@ -335,7 +335,7 @@ func (t *translator) calleeID(fn *ssa.Function) (id, reason string) {
 	return graph.FuncID(obj), ""
 }
 
-// funcID is grepo's ID for a declared function: FullName, except init
+// funcID is grepo's ID for a declared function: graph.FuncID, except init
 // functions, which grepo numbers per file and are found by position.
 func (t *translator) funcID(fn *ssa.Function) (string, bool) {
 	obj, ok := fn.Object().(*types.Func)

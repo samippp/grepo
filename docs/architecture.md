@@ -115,7 +115,7 @@ Example: what can `lookup` reach through `g.Get(1)`?
 ```
 BuildCallGraph
   for each package → file → declaration:
-    FuncDecl → handleFuncDecl      Function node (ID via funcID, Owner via receiverOwner)
+    FuncDecl → handleFuncDecl      Function node (ID via assignFuncID, Owner via receiverOwner)
                 └ handleFuncCalls  ast.Inspect the body → callee() / callKind() / args()
     GenDecl  → handleGenDecl       switch on token:
                 ├ TYPE      → handleTypeSpec   Type node; struct → structFields;
