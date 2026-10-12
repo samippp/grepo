@@ -151,23 +151,23 @@ func BuildCallGraph(res *load.Result) *CallGraph {
 	}
 	b.addImplementations()
 
-	slices.SortFunc(b.types, func(a, b Type) int {
-		return cmp.Compare(a.ID, b.ID)
+	slices.SortFunc(b.types, func(x, y Type) int {
+		return cmp.Compare(x.ID, y.ID)
 	})
-	slices.SortFunc(b.variables, func(a, b Variable) int {
-		return cmp.Compare(a.ID, b.ID)
+	slices.SortFunc(b.variables, func(x, y Variable) int {
+		return cmp.Compare(x.ID, y.ID)
 	})
-	slices.SortFunc(b.functions, func(a, b Function) int {
-		return cmp.Compare(a.ID, b.ID)
+	slices.SortFunc(b.functions, func(x, y Function) int {
+		return cmp.Compare(x.ID, y.ID)
 	})
-	slices.SortFunc(b.implementations, func(a, b Implementation) int {
-		return cmp.Or(cmp.Compare(a.Type, b.Type), cmp.Compare(a.Interface, b.Interface))
+	slices.SortFunc(b.implementations, func(x, y Implementation) int {
+		return cmp.Or(cmp.Compare(x.Type, y.Type), cmp.Compare(x.Interface, y.Interface))
 	})
-	slices.SortFunc(b.calls, func(a, b FunctionCall) int {
+	slices.SortFunc(b.calls, func(x, y FunctionCall) int {
 		return cmp.Or(
-			cmp.Compare(a.Caller, b.Caller),
-			cmp.Compare(a.CallerPosition, b.CallerPosition),
-			cmp.Compare(a.Callee, b.Callee),
+			cmp.Compare(x.Caller, y.Caller),
+			cmp.Compare(x.CallerPosition, y.CallerPosition),
+			cmp.Compare(x.Callee, y.Callee),
 		)
 	})
 	return &CallGraph{
@@ -210,7 +210,7 @@ func (b *callGraphBuilder) handleFuncDecl(funcDecl *ast.FuncDecl) {
 
 	// A nil *BlockStmt passed as ast.Node isn't == nil, so check here.
 	if funcDecl.Body != nil {
-		b.handleFuncCalls(id, funcDecl.Body)
+		b.addCalls(id, funcDecl.Body)
 	}
 }
 
@@ -225,8 +225,8 @@ func (b *callGraphBuilder) assignFuncDeclID(funcDecl *ast.FuncDecl, fn *types.Fu
 	return fmt.Sprintf("%s@%s#%d", fn.FullName(), file, b.inits[file])
 }
 
-// handleFuncCalls records every call under root, made by the function callerID.
-func (b *callGraphBuilder) handleFuncCalls(callerID string, root ast.Node) {
+// addCalls records every call under root, made by the function callerID.
+func (b *callGraphBuilder) addCalls(callerID string, root ast.Node) {
 	ast.Inspect(root, func(n ast.Node) bool {
 		call, ok := n.(*ast.CallExpr)
 		if !ok {
@@ -236,16 +236,16 @@ func (b *callGraphBuilder) handleFuncCalls(callerID string, root ast.Node) {
 		if !isCall {
 			return true
 		}
-		c := FunctionCall{
+		edge := FunctionCall{
 			Caller:         callerID,
 			CallerPosition: b.pos(call.Pos()),
 			CallKind:       callKind(callee),
 			Args:           b.args(call.Args),
 		}
 		if callee != nil {
-			c.Callee = FuncID(callee)
+			edge.Callee = FuncID(callee)
 		}
-		b.calls = append(b.calls, c)
+		b.calls = append(b.calls, edge)
 		return true // closures and arguments can contain calls
 	})
 }
@@ -301,10 +301,10 @@ func callKind(callee *types.Func) CallKind {
 // args describes each argument expression at a call site.
 func (b *callGraphBuilder) args(exprs []ast.Expr) []Arg {
 	var args []Arg
-	for _, e := range exprs {
+	for _, arg := range exprs {
 		args = append(args, Arg{
-			Expr: types.ExprString(e),
-			Type: types.TypeString(b.pkg.TypesInfo.TypeOf(e), nil),
+			Expr: types.ExprString(arg),
+			Type: types.TypeString(b.pkg.TypesInfo.TypeOf(arg), nil),
 		})
 	}
 	return args
@@ -336,7 +336,7 @@ func (b *callGraphBuilder) handleValueSpec(spec *ast.ValueSpec) {
 		if obj == nil {
 			continue
 		}
-		v := Variable{
+		node := Variable{
 			ID:       VarID(obj),
 			Name:     obj.Name(),
 			Package:  b.pkg.PkgPath,
@@ -344,15 +344,15 @@ func (b *callGraphBuilder) handleValueSpec(spec *ast.ValueSpec) {
 			Exported: obj.Exported(),
 			Pos:      b.pos(name.Pos()),
 		}
-		if c, ok := obj.(*types.Const); ok {
-			v.Const, v.Value = true, c.Val().ExactString()
+		if cnst, ok := obj.(*types.Const); ok {
+			node.Const, node.Value = true, cnst.Val().ExactString()
 		}
-		b.variables = append(b.variables, v)
+		b.variables = append(b.variables, node)
 	}
 
 	// Only the values: walking the whole spec would also visit its type expression.
 	for _, value := range spec.Values {
-		b.handleFuncCalls(b.pkg.PkgPath, value)
+		b.addCalls(b.pkg.PkgPath, value)
 	}
 }
 
@@ -362,7 +362,7 @@ func (b *callGraphBuilder) handleTypeSpec(spec *ast.TypeSpec) {
 	if !ok {
 		return
 	}
-	t := Type{
+	node := Type{
 		ID:       TypeID(tn),
 		Name:     tn.Name(),
 		Package:  b.pkg.PkgPath,
@@ -371,31 +371,31 @@ func (b *callGraphBuilder) handleTypeSpec(spec *ast.TypeSpec) {
 	}
 
 	if alias, ok := tn.Type().(*types.Alias); ok {
-		t.Kind = AliasType
-		t.Target = types.TypeString(alias.Rhs(), nil)
-		b.types = append(b.types, t)
+		node.Kind = AliasType
+		node.Target = types.TypeString(alias.Rhs(), nil)
+		b.types = append(b.types, node)
 		return
 	}
 
 	switch u := tn.Type().Underlying().(type) {
 	case *types.Struct:
-		t.Kind, t.Fields = StructType, b.structFields(t.ID, u)
+		node.Kind, node.Fields = StructType, b.structFields(node.ID, u)
 	case *types.Interface:
-		t.Kind = InterfaceType
-		for e := range u.EmbeddedTypes() {
-			t.Embeds = append(t.Embeds, types.TypeString(e, nil))
+		node.Kind = InterfaceType
+		for embedded := range u.EmbeddedTypes() {
+			node.Embeds = append(node.Embeds, types.TypeString(embedded, nil))
 		}
-		for m := range u.ExplicitMethods() {
-			b.handleInterfaceMethod(m)
+		for fn := range u.ExplicitMethods() {
+			b.addInterfaceMethod(fn)
 		}
 	default:
-		t.Kind, t.Underlying = OtherType, types.TypeString(u, nil)
+		node.Kind, node.Underlying = OtherType, types.TypeString(u, nil)
 	}
-	b.types = append(b.types, t)
+	b.types = append(b.types, node)
 
 	// Kept for addImplementations. Generics can't be checked without type args.
 	if !isGeneric(tn) {
-		if t.Kind == InterfaceType {
+		if node.Kind == InterfaceType {
 			b.interfaces = append(b.interfaces, tn)
 		} else {
 			b.concrete = append(b.concrete, tn)
@@ -408,15 +408,15 @@ func (b *callGraphBuilder) handleTypeSpec(spec *ast.TypeSpec) {
 // Each type is only checked against interfaces indexed under one of its methods.
 func (b *callGraphBuilder) addImplementations() {
 	byMethod := indexInterfaces(b.interfaces)
-	for _, c := range b.concrete {
-		for _, e := range candidateInterfaces(c, byMethod) {
-			value := types.Implements(c.Type(), e.iface)
-			if !value && !types.Implements(types.NewPointer(c.Type()), e.iface) {
+	for _, tn := range b.concrete {
+		for _, entry := range candidateInterfaces(tn, byMethod) {
+			value := types.Implements(tn.Type(), entry.iface)
+			if !value && !types.Implements(types.NewPointer(tn.Type()), entry.iface) {
 				continue
 			}
 			b.implementations = append(b.implementations, Implementation{
-				Type:        TypeID(c),
-				Interface:   TypeID(e.name),
+				Type:        TypeID(tn),
+				Interface:   TypeID(entry.name),
 				PointerOnly: !value, // *T always has T's methods, so only the reverse can fail
 			})
 		}
@@ -445,12 +445,12 @@ func indexInterfaces(interfaces []*types.TypeName) map[string][]ifaceEntry {
 	return byMethod
 }
 
-// candidateInterfaces returns the interfaces c might implement. It looks at
-// *c's method set, which includes value-receiver and promoted methods. Each
+// candidateInterfaces returns the interfaces tn might implement. It looks at
+// *tn's method set, which includes value-receiver and promoted methods. Each
 // interface has one key, so none is returned twice.
-func candidateInterfaces(c *types.TypeName, byMethod map[string][]ifaceEntry) []ifaceEntry {
+func candidateInterfaces(tn *types.TypeName, byMethod map[string][]ifaceEntry) []ifaceEntry {
 	var out []ifaceEntry
-	for sel := range types.NewMethodSet(types.NewPointer(c.Type())).Methods() {
+	for sel := range types.NewMethodSet(types.NewPointer(tn.Type())).Methods() {
 		out = append(out, byMethod[sel.Obj().Name()]...)
 	}
 	return out
@@ -465,30 +465,30 @@ func isGeneric(tn *types.TypeName) bool {
 // structFields describes each field of st, a struct owned by the type ownerID.
 func (b *callGraphBuilder) structFields(ownerID string, st *types.Struct) []Field {
 	var fields []Field
-	for f := range st.Fields() {
+	for field := range st.Fields() {
 		fields = append(fields, Field{
-			ID:       FieldID(ownerID, f.Name()),
-			Name:     f.Name(),
-			Type:     types.TypeString(f.Type(), nil),
-			Embedded: f.Embedded(),
-			Pos:      b.pos(f.Pos()),
+			ID:       FieldID(ownerID, field.Name()),
+			Name:     field.Name(),
+			Type:     types.TypeString(field.Type(), nil),
+			Embedded: field.Embedded(),
+			Pos:      b.pos(field.Pos()),
 		})
 	}
 	return fields
 }
 
-// handleInterfaceMethod records a method declared in an interface as a
+// addInterfaceMethod records a method declared in an interface as a
 // Function owned by that interface. It has no body, so no calls.
-func (b *callGraphBuilder) handleInterfaceMethod(m *types.Func) {
-	f := b.newFunction(m, FuncID(m))
-	f.Receiver = nil // interface methods have no written receiver
-	b.functions = append(b.functions, f)
+func (b *callGraphBuilder) addInterfaceMethod(fn *types.Func) {
+	node := b.newFunction(fn, FuncID(fn))
+	node.Receiver = nil // interface methods have no written receiver
+	b.functions = append(b.functions, node)
 }
 
 // newFunction builds the Function node for fn, with the given ID.
 func (b *callGraphBuilder) newFunction(fn *types.Func, id string) Function {
 	sig := fn.Signature()
-	f := Function{
+	node := Function{
 		ID:       id,
 		Name:     fn.Name(),
 		Package:  b.pkg.PkgPath,
@@ -499,9 +499,9 @@ func (b *callGraphBuilder) newFunction(fn *types.Func, id string) Function {
 		Owner:    receiverOwner(fn),
 	}
 	if recv := sig.Recv(); recv != nil {
-		f.Receiver = &Param{Name: recv.Name(), Type: types.TypeString(recv.Type(), nil)}
+		node.Receiver = &Param{Name: recv.Name(), Type: types.TypeString(recv.Type(), nil)}
 	}
-	return f
+	return node
 }
 
 // FuncID is the ID of a function or method. Plain functions use FullName.
@@ -537,11 +537,11 @@ func receiver(fn *types.Func) (named *types.Named, pointer bool) {
 	if recv == nil {
 		return nil, false
 	}
-	t := recv.Type()
-	if p, ok := t.(*types.Pointer); ok {
-		t, pointer = p.Elem(), true
+	typ := recv.Type()
+	if p, ok := typ.(*types.Pointer); ok {
+		typ, pointer = p.Elem(), true
 	}
-	named, _ = types.Unalias(t).(*types.Named)
+	named, _ = types.Unalias(typ).(*types.Named)
 	return named, pointer
 }
 
@@ -574,9 +574,9 @@ func FieldID(ownerID, name string) string {
 }
 
 // tupleParams converts a params or results tuple into Params.
-func tupleParams(t *types.Tuple) []Param {
+func tupleParams(tuple *types.Tuple) []Param {
 	var params []Param
-	for v := range t.Variables() {
+	for v := range tuple.Variables() {
 		params = append(params, Param{Name: v.Name(), Type: types.TypeString(v.Type(), nil)})
 	}
 	return params
