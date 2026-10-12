@@ -212,7 +212,7 @@ func (b *callGraphBuilder) handleFuncDecl(funcDecl *ast.FuncDecl) {
 		recv = &rs[0]
 	}
 
-	id := b.assignFuncID(funcDecl, fn)
+	id := b.assignFuncDeclID(funcDecl, fn)
 	b.functions = append(b.functions, Function{
 		ID:       id,
 		Name:     funcDecl.Name.Name,
@@ -231,9 +231,9 @@ func (b *callGraphBuilder) handleFuncDecl(funcDecl *ast.FuncDecl) {
 	}
 }
 
-// assignFuncID is FuncID(fn), except each init gets "pkg.init@file#n", since a
+// assignFuncDeclID is FuncID(fn), except each init gets "pkg.init@file#n", since a
 // package can have several. Call once per declaration: it counts inits.
-func (b *callGraphBuilder) assignFuncID(funcDecl *ast.FuncDecl, fn *types.Func) string {
+func (b *callGraphBuilder) assignFuncDeclID(funcDecl *ast.FuncDecl, fn *types.Func) string {
 	if funcDecl.Recv != nil || funcDecl.Name.Name != "init" {
 		return FuncID(fn)
 	}
