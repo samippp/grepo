@@ -48,6 +48,8 @@ const (
 	tLabel     = modelPkg + ".Label"
 	tBadge     = modelPkg + ".Badge"
 	tAny       = modelPkg + ".Any"
+	tSource    = mainPkg + ".Source[T]"
+	tS         = storePkg + ".S"
 )
 
 func buildFixtureCallGraph(t *testing.T) *CallGraph {
@@ -190,6 +192,43 @@ func TestCallGraphFunctions(t *testing.T) {
 			Pos:      "model/kinds.go:28",
 			Owner:    tLabel,
 		},
+		// Method IDs use the owner's type ID. A generic interface method has no
+		// constraint in its ID (not Source[T any]).
+		{
+			ID: "(" + tSource + ").Next", Name: "Next", Package: mainPkg,
+			Results:  []Param{{Name: "", Type: "T"}},
+			Exported: true,
+			Pos:      "main.go:71",
+			Owner:    tSource,
+		},
+		{
+			ID: mainPkg + ".drain", Name: "drain", Package: mainPkg,
+			Params: []Param{{Name: "s", Type: mainPkg + ".Source[int]"}},
+			Pos:    "main.go:73",
+		},
+		// Receiver written as List[E]: the ID still uses the declaration's List[T].
+		{
+			ID: "(*" + tList + ").Len", Name: "Len", Package: mainPkg,
+			Receiver: &Param{Name: "l", Type: "*" + mainPkg + ".List[E]"},
+			Results:  []Param{{Name: "", Type: "int"}},
+			Exported: true,
+			Pos:      "main.go:75",
+			Owner:    tList,
+		},
+		// Declared through the alias S: the ID and owner are Store's.
+		{
+			ID: "(*" + tStore + ").Reset", Name: "Reset", Package: storePkg,
+			Receiver: &Param{Name: "s", Type: "*" + tS},
+			Exported: true,
+			Pos:      "store/alias.go:6",
+			Owner:    tStore,
+		},
+		{
+			ID: mainPkg + ".describe", Name: "describe", Package: mainPkg,
+			Params:  []Param{{Name: "err", Type: "error"}},
+			Results: []Param{{Name: "", Type: "string"}},
+			Pos:     "main.go:78",
+		},
 	}
 
 	got := make(map[string]Function)
@@ -285,6 +324,14 @@ func TestCallGraphTypes(t *testing.T) {
 		{
 			ID: tAny, Name: "Any", Package: modelPkg, Kind: InterfaceType, Exported: true,
 			Pos: "model/kinds.go:33",
+		},
+		{
+			ID: tSource, Name: "Source", Package: mainPkg, Kind: InterfaceType, Exported: true,
+			Pos: "main.go:71",
+		},
+		{
+			ID: tS, Name: "S", Package: storePkg, Kind: AliasType, Exported: true,
+			Pos: "store/alias.go:4", Target: tStore,
 		},
 	}
 
@@ -442,6 +489,10 @@ func TestCallGraphCalls(t *testing.T) {
 		// var _ = register() has no variable node, but the call is still recorded.
 		{Caller: storePkg, Callee: storePkg + ".register", CallerPosition: "store/vars.go:17", CallKind: StaticCall},
 		// Nothing for var _ Getter = (*Store)(nil): a conversion, not a call.
+		// s.Next() on a generic interface: the callee matches the method node's ID.
+		{Caller: mainPkg + ".drain", Callee: "(" + tSource + ").Next", CallerPosition: "main.go:73", CallKind: InterfaceCall},
+		// err.Error(): error is built in, with no package path in its ID.
+		{Caller: mainPkg + ".describe", Callee: "(error).Error", CallerPosition: "main.go:78", CallKind: InterfaceCall},
 	}
 
 	got := make(map[string]bool)
