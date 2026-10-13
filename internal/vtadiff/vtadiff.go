@@ -220,6 +220,7 @@ func (c *Category) add(format string, args ...any) {
 // translator maps VTA's SSA functions onto grepo's IDs.
 type translator struct {
 	res        *load.Result
+	cg         *graph.CallGraph // for its ID functions
 	fset       *token.FileSet
 	roots      map[string]bool   // repo package paths
 	initByPos  map[string]string // "file:line" → grepo ID, for init functions
@@ -231,6 +232,7 @@ type translator struct {
 func newTranslator(res *load.Result, cg *graph.CallGraph) *translator {
 	t := &translator{
 		res:        res,
+		cg:         cg,
 		roots:      map[string]bool{},
 		initByPos:  map[string]string{},
 		owner:      map[string]string{},
@@ -279,7 +281,7 @@ func (t *translator) vtaEdges() ([]edge, map[string]int) {
 			expected[reason]++
 			return nil
 		}
-		ed := edge{caller: caller, callee: callee, pos: t.pos(e.Site.Pos()), targetType: recvTypeID(e.Callee.Func)}
+		ed := edge{caller: caller, callee: callee, pos: t.pos(e.Site.Pos()), targetType: t.recvTypeID(e.Callee.Func)}
 		if !seen[ed] { // generic instances repeat the same edge
 			seen[ed] = true
 			edges = append(edges, ed)
@@ -332,10 +334,10 @@ func (t *translator) calleeID(fn *ssa.Function) (id, reason string) {
 	if obj.Name() == "init" && obj.Signature().Recv() == nil {
 		return "", "package initializer calls an init function"
 	}
-	return graph.FuncID(obj), ""
+	return t.cg.FuncID(obj), ""
 }
 
-// funcID is grepo's ID for a declared function: graph.FuncID, except init
+// funcID is grepo's ID for a declared function: the graph's FuncID, except init
 // functions, which grepo numbers per file and are found by position.
 func (t *translator) funcID(fn *ssa.Function) (string, bool) {
 	obj, ok := fn.Object().(*types.Func)
@@ -346,7 +348,7 @@ func (t *translator) funcID(fn *ssa.Function) (string, bool) {
 		id, ok := t.initByPos[t.pos(fn.Pos())]
 		return id, ok
 	}
-	return graph.FuncID(obj), true
+	return t.cg.FuncID(obj), true
 }
 
 // pos formats p as "file:line" relative to the repo root, like grepo does.
@@ -360,7 +362,7 @@ func (t *translator) pos(p token.Pos) string {
 }
 
 // recvTypeID is the type ID of fn's receiver (pointer and aliases removed).
-func recvTypeID(fn *ssa.Function) string {
+func (t *translator) recvTypeID(fn *ssa.Function) string {
 	var recv *types.Var
 	if fn.Signature.Recv() != nil {
 		recv = fn.Signature.Recv()
@@ -370,15 +372,15 @@ func recvTypeID(fn *ssa.Function) string {
 	if recv == nil {
 		return ""
 	}
-	t := recv.Type()
-	if p, ok := t.(*types.Pointer); ok {
-		t = p.Elem()
+	typ := recv.Type()
+	if p, ok := typ.(*types.Pointer); ok {
+		typ = p.Elem()
 	}
-	named, ok := types.Unalias(t).(*types.Named)
+	named, ok := types.Unalias(typ).(*types.Named)
 	if !ok {
 		return ""
 	}
-	return graph.TypeID(named.Origin().Obj())
+	return t.cg.TypeID(named.Origin().Obj())
 }
 
 func site(caller, pos string) string { return caller + "@" + pos }

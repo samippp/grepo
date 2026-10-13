@@ -50,6 +50,15 @@ const (
 	tAny       = modelPkg + ".Any"
 	tSource    = mainPkg + ".Source[T]"
 	tS         = storePkg + ".S"
+
+	// Local types: enclosing function + name + #n, counted per name.
+	tResult      = mainPkg + ".result"
+	tParseResult = mainPkg + ".parse.result#1"
+	tSaveResult1 = mainPkg + ".save.result#1"
+	tSaveResult2 = mainPkg + ".save.result#2"
+	tLocalNamer  = mainPkg + ".announce.namer#1"
+	tJob         = mainPkg + ".spawn.job#1"
+	tBox         = mainPkg + ".wrap.box#1"
 )
 
 func buildFixtureCallGraph(t *testing.T) *CallGraph {
@@ -229,6 +238,31 @@ func TestCallGraphFunctions(t *testing.T) {
 			Results: []Param{{Name: "", Type: "string"}},
 			Pos:     "main.go:78",
 		},
+		{ID: mainPkg + ".parse", Name: "parse", Package: mainPkg, Pos: "main.go:83"},
+		{
+			ID: mainPkg + ".save", Name: "save", Package: mainPkg,
+			Params: []Param{{Name: "ok", Type: "bool"}},
+			Pos:    "main.go:87",
+		},
+		{
+			ID: mainPkg + ".announce", Name: "announce", Package: mainPkg,
+			Params: []Param{{Name: "v", Type: "any"}},
+			Pos:    "main.go:98",
+		},
+		// A local interface's method: owned by the local type, ID built from its ID.
+		{
+			ID: "(" + tLocalNamer + ").Name", Name: "Name", Package: mainPkg,
+			Results:  []Param{{Name: "", Type: "string"}},
+			Exported: true,
+			Pos:      "main.go:99",
+			Owner:    tLocalNamer,
+		},
+		{ID: mainPkg + ".spawn", Name: "spawn", Package: mainPkg, Pos: "main.go:106"},
+		{
+			ID: mainPkg + ".wrap", Name: "wrap", Package: mainPkg,
+			Params: []Param{{Name: "v", Type: "T"}},
+			Pos:    "main.go:113",
+		},
 	}
 
 	got := make(map[string]Function)
@@ -333,6 +367,44 @@ func TestCallGraphTypes(t *testing.T) {
 			ID: tS, Name: "S", Package: storePkg, Kind: AliasType, Exported: true,
 			Pos: "store/alias.go:4", Target: tStore,
 		},
+		// Package-level result keeps its plain ID; the local ones can't collide with it.
+		{
+			ID: tResult, Name: "result", Package: mainPkg, Kind: StructType,
+			Pos:    "main.go:81",
+			Fields: []Field{{ID: tResult + ".ok", Name: "ok", Type: "bool", Pos: "main.go:81"}},
+		},
+		{
+			ID: tParseResult, Name: "result", Package: mainPkg, Kind: StructType,
+			Pos:    "main.go:84",
+			Fields: []Field{{ID: tParseResult + ".n", Name: "n", Type: "int", Pos: "main.go:84"}},
+		},
+		// Same name twice in one function: numbered in source order.
+		{
+			ID: tSaveResult1, Name: "result", Package: mainPkg, Kind: StructType,
+			Pos:    "main.go:89",
+			Fields: []Field{{ID: tSaveResult1 + ".err", Name: "err", Type: "error", Pos: "main.go:89"}},
+		},
+		{
+			ID: tSaveResult2, Name: "result", Package: mainPkg, Kind: StructType,
+			Pos:    "main.go:91",
+			Fields: []Field{{ID: tSaveResult2 + ".msg", Name: "msg", Type: "string", Pos: "main.go:91"}},
+		},
+		{
+			ID: tLocalNamer, Name: "namer", Package: mainPkg, Kind: InterfaceType,
+			Pos: "main.go:99",
+		},
+		// Inside a closure: the parent is still spawn (#13).
+		{
+			ID: tJob, Name: "job", Package: mainPkg, Kind: StructType,
+			Pos:    "main.go:108",
+			Fields: []Field{{ID: tJob + ".Store", Name: "Store", Type: "*" + tStore, Embedded: true, Pos: "main.go:108"}},
+		},
+		// Uses wrap's T, but has no type params of its own: no [T] in the ID.
+		{
+			ID: tBox, Name: "box", Package: mainPkg, Kind: StructType,
+			Pos:    "main.go:114",
+			Fields: []Field{{ID: tBox + ".v", Name: "v", Type: "T", Pos: "main.go:114"}},
+		},
 	}
 
 	got := make(map[string]Type)
@@ -366,6 +438,11 @@ func TestCallGraphImplementations(t *testing.T) {
 		{Type: tLabel, Interface: tNamer},
 		// Badge has Name only through its embedded Label (a promoted method).
 		{Type: tBadge, Interface: tNamer},
+		// Local interfaces take part like package-level ones.
+		{Type: tLabel, Interface: tLocalNamer},
+		{Type: tBadge, Interface: tLocalNamer},
+		// A local struct implements through its embedded *Store, so its value does too.
+		{Type: tJob, Interface: tGetter},
 		// Nothing for Any: empty interfaces are skipped.
 		// Not listed: interfaces themselves, generic List[T] (no type args to check),
 		// and interfaces outside the repo (UserID implements fmt.Stringer).
@@ -416,6 +493,7 @@ func TestCallGraphVariables(t *testing.T) {
 		c("Red", "untyped int", "0", "26", true),
 		c("Green", "untyped int", "1", "27", true),
 		c("Blue", "untyped int", "2", "28", true),
+		// No node for save's local var count.
 	}
 
 	got := make(map[string]Variable)
@@ -493,6 +571,8 @@ func TestCallGraphCalls(t *testing.T) {
 		{Caller: mainPkg + ".drain", Callee: "(" + tSource + ").Next", CallerPosition: "main.go:73", CallKind: InterfaceCall},
 		// err.Error(): error is built in, with no package path in its ID.
 		{Caller: mainPkg + ".describe", Callee: "(error).Error", CallerPosition: "main.go:78", CallKind: InterfaceCall},
+		// n.Name() through a local interface: the callee has a node now.
+		{Caller: mainPkg + ".announce", Callee: "(" + tLocalNamer + ").Name", CallerPosition: "main.go:101", CallKind: InterfaceCall},
 	}
 
 	got := make(map[string]bool)

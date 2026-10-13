@@ -117,17 +117,27 @@ type CallGraph struct {
 	Calls     []FunctionCall `json:"calls"`
 
 	Implementations []Implementation `json:"implementations"`
+
+	ids idTable // local type IDs, for FuncID / TypeID
 }
 
+// FuncID is grepo's ID for fn, including methods of this graph's local types.
+func (g *CallGraph) FuncID(fn *types.Func) string { return g.ids.funcID(fn) }
+
+// TypeID is grepo's ID for tn, including this graph's local types.
+func (g *CallGraph) TypeID(tn *types.TypeName) string { return g.ids.typeID(tn) }
+
 // BuildCallGraph records every function and call in res. Rules (see tests):
-//   - IDs from FuncID / TypeID, types from types.TypeString(t, nil)
+//   - IDs from funcID / typeID, types from types.TypeString(t, nil)
 //   - closure calls belong to the enclosing func; built-ins/conversions aren't calls
 //   - external calls kept; interface calls point at the interface method
 //   - dynamic calls have no Callee; one edge per call site; output sorted
 func BuildCallGraph(res *load.Result) *CallGraph {
 	b := &callGraphBuilder{
-		root:  res.Dir,
-		inits: map[string]int{},
+		root:       res.Dir,
+		inits:      map[string]int{},
+		ids:        idTable{},
+		localCount: map[string]int{},
 
 		types:     []Type{},
 		variables: []Variable{},
@@ -177,6 +187,7 @@ func BuildCallGraph(res *load.Result) *CallGraph {
 		Functions:       b.functions,
 		Calls:           b.calls,
 		Implementations: b.implementations,
+		ids:             b.ids,
 	}
 }
 
@@ -185,7 +196,9 @@ type callGraphBuilder struct {
 	root string            // repo root
 	pkg  *packages.Package // current package
 
-	inits map[string]int // init funcs seen per file, for unique init IDs
+	inits      map[string]int // init funcs seen per file, for unique init IDs
+	ids        idTable        // local type IDs, filled during the walk
+	localCount map[string]int // local types seen per "parent.name", for unique IDs
 
 	types     []Type
 	variables []Variable
@@ -211,7 +224,7 @@ func (b *callGraphBuilder) handleFuncDecl(funcDecl *ast.FuncDecl) {
 
 	// A nil *BlockStmt passed as ast.Node isn't == nil, so check here.
 	if funcDecl.Body != nil {
-		b.addCalls(id, funcDecl.Body)
+		b.walkBody(id, funcDecl.Body)
 	}
 }
 
@@ -219,36 +232,61 @@ func (b *callGraphBuilder) handleFuncDecl(funcDecl *ast.FuncDecl) {
 // package can have several. Call once per declaration: it counts inits.
 func (b *callGraphBuilder) assignFuncDeclID(funcDecl *ast.FuncDecl, fn *types.Func) string {
 	if funcDecl.Recv != nil || funcDecl.Name.Name != "init" {
-		return FuncID(fn)
+		return b.ids.funcID(fn)
 	}
 	file := rel(b.root, b.pkg.Fset.Position(funcDecl.Pos()).Filename)
 	b.inits[file]++
 	return fmt.Sprintf("%s@%s#%d", fn.FullName(), file, b.inits[file])
 }
 
-// addCalls records every call under root, made by the function callerID.
-func (b *callGraphBuilder) addCalls(callerID string, root ast.Node) {
+// walkBody records the calls and local types under root (a function body, or
+// a package-level value), with callerID as their caller or parent.
+func (b *callGraphBuilder) walkBody(callerID string, root ast.Node) {
 	ast.Inspect(root, func(n ast.Node) bool {
-		call, ok := n.(*ast.CallExpr)
-		if !ok {
-			return true
+		switch n := n.(type) {
+		case *ast.GenDecl:
+			if n.Tok == token.TYPE {
+				for _, spec := range n.Specs {
+					spec := spec.(*ast.TypeSpec) // TYPE decls only hold TypeSpecs
+					b.assignLocalTypeID(callerID, spec)
+					b.handleTypeSpec(spec)
+				}
+			}
+		case *ast.CallExpr:
+			b.addCall(callerID, n)
 		}
-		callee, isCall := b.callee(call)
-		if !isCall {
-			return true
-		}
-		edge := FunctionCall{
-			Caller:         callerID,
-			CallerPosition: b.pos(call.Pos()),
-			CallKind:       callKind(callee),
-			Args:           b.args(call.Args),
-		}
-		if callee != nil {
-			edge.Callee = FuncID(callee)
-		}
-		b.calls = append(b.calls, edge)
-		return true // closures and arguments can contain calls
+		return true // closures, arguments and declarations can contain more
 	})
+}
+
+// addCall records one call made by callerID.
+func (b *callGraphBuilder) addCall(callerID string, call *ast.CallExpr) {
+	callee, isCall := b.callee(call)
+	if !isCall {
+		return
+	}
+	edge := FunctionCall{
+		Caller:         callerID,
+		CallerPosition: b.pos(call.Pos()),
+		CallKind:       callKind(callee),
+		Args:           b.args(call.Args),
+	}
+	if callee != nil {
+		edge.Callee = b.ids.funcID(callee)
+	}
+	b.calls = append(b.calls, edge)
+}
+
+// assignLocalTypeID gives a type declared inside parentID the ID
+// "parent.name#n", numbered per name in source order. Call once per declaration.
+func (b *callGraphBuilder) assignLocalTypeID(parentID string, spec *ast.TypeSpec) {
+	tn, ok := b.pkg.TypesInfo.Defs[spec.Name].(*types.TypeName)
+	if !ok {
+		return
+	}
+	key := parentID + "." + tn.Name()
+	b.localCount[key]++
+	b.ids[tn] = fmt.Sprintf("%s#%d", key, b.localCount[key])
 }
 
 // callee returns the function call refers to, or nil if unknown (dynamic).
@@ -353,7 +391,7 @@ func (b *callGraphBuilder) handleValueSpec(spec *ast.ValueSpec) {
 
 	// Only the values: walking the whole spec would also visit its type expression.
 	for _, value := range spec.Values {
-		b.addCalls(b.pkg.PkgPath, value)
+		b.walkBody(b.pkg.PkgPath, value)
 	}
 }
 
@@ -364,7 +402,7 @@ func (b *callGraphBuilder) handleTypeSpec(spec *ast.TypeSpec) {
 		return
 	}
 	node := Type{
-		ID:       TypeID(tn),
+		ID:       b.ids.typeID(tn),
 		Name:     tn.Name(),
 		Package:  b.pkg.PkgPath,
 		Exported: tn.Exported(),
@@ -416,8 +454,8 @@ func (b *callGraphBuilder) addImplementations() {
 				continue
 			}
 			b.implementations = append(b.implementations, Implementation{
-				Type:        TypeID(tn),
-				Interface:   TypeID(entry.name),
+				Type:        b.ids.typeID(tn),
+				Interface:   b.ids.typeID(entry.name),
 				PointerOnly: !value, // *T always has T's methods, so only the reverse can fail
 			})
 		}
@@ -481,7 +519,7 @@ func (b *callGraphBuilder) structFields(ownerID string, st *types.Struct) []Fiel
 // addInterfaceMethod records a method declared in an interface as a
 // Function owned by that interface. It has no body, so no calls.
 func (b *callGraphBuilder) addInterfaceMethod(fn *types.Func) {
-	node := b.newFunction(fn, FuncID(fn))
+	node := b.newFunction(fn, b.ids.funcID(fn))
 	node.Receiver = nil // interface methods have no written receiver
 	b.functions = append(b.functions, node)
 }
@@ -497,7 +535,7 @@ func (b *callGraphBuilder) newFunction(fn *types.Func, id string) Function {
 		Results:  tupleParams(sig.Results()),
 		Exported: fn.Exported(),
 		Pos:      b.pos(fn.Pos()),
-		Owner:    receiverOwner(fn),
+		Owner:    b.ids.receiverOwner(fn),
 	}
 	if recv := sig.Recv(); recv != nil {
 		node.Receiver = &Param{Name: recv.Name(), Type: types.TypeString(recv.Type(), nil)}
@@ -505,11 +543,15 @@ func (b *callGraphBuilder) newFunction(fn *types.Func, id string) Function {
 	return node
 }
 
-// FuncID is the ID of a function or method. Plain functions use FullName.
+// idTable holds the IDs of local types (declared inside a function), which
+// the walk assigns. Every other ID is computed from the object alone.
+type idTable map[*types.TypeName]string
+
+// funcID is the ID of a function or method. Plain functions use FullName.
 // Methods use "(T).name" or "(*T).name", where T is the declaring type's
-// TypeID: no constraints, the declaration's param names, aliases resolved.
+// typeID: no constraints, the declaration's param names, aliases resolved.
 // Generic instances map to their declaration.
-func FuncID(fn *types.Func) string {
+func (ids idTable) funcID(fn *types.Func) string {
 	fn = fn.Origin()
 	named, pointer := receiver(fn)
 	if named == nil {
@@ -519,14 +561,14 @@ func FuncID(fn *types.Func) string {
 	if pointer {
 		star = "*"
 	}
-	return "(" + star + TypeID(named.Obj()) + ")." + fn.Name()
+	return "(" + star + ids.typeID(named.Obj()) + ")." + fn.Name()
 }
 
 // receiverOwner is the ID of the type a method is declared on, or "" for a
 // plain function. *Store and aliases of Store both give Store's ID.
-func receiverOwner(fn *types.Func) string {
+func (ids idTable) receiverOwner(fn *types.Func) string {
 	if named, _ := receiver(fn); named != nil {
-		return TypeID(named.Obj())
+		return ids.typeID(named.Obj())
 	}
 	return ""
 }
@@ -546,13 +588,20 @@ func receiver(fn *types.Func) (named *types.Named, pointer bool) {
 	return named, pointer
 }
 
-// TypeID is "pkg.Name", with type param names for generics: "pkg.List[T]".
+// typeID is "pkg.Name", with type param names for generics: "pkg.List[T]".
 // (types.TypeString would give "pkg.List[T any]", which method IDs don't use.)
-func TypeID(tn *types.TypeName) string {
+// Local types use the ID the walk assigned: "parent.name#n".
+func (ids idTable) typeID(tn *types.TypeName) string {
 	if tn.Pkg() == nil {
 		return tn.Name() // built-in, e.g. error
 	}
 	id := tn.Pkg().Path() + "." + tn.Name()
+	if tn.Parent() != tn.Pkg().Scope() {
+		if local, ok := ids[tn]; ok {
+			return local
+		}
+		return id + "#?" // a local type the walk missed: never a package-level ID
+	}
 	named, ok := tn.Type().(*types.Named)
 	if !ok || named.TypeParams().Len() == 0 {
 		return id

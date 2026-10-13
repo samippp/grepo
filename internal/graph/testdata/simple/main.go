@@ -76,3 +76,41 @@ func (l *List[E]) Len() int { return len(l.items) }
 
 // error is a built-in type with no package.
 func describe(err error) string { return err.Error() }
+
+// Local types: ID is the enclosing function + name + #n, counted per name.
+type result struct{ ok bool }
+
+func parse() {
+	type result struct{ n int }
+}
+
+func save(ok bool) {
+	if ok {
+		type result struct{ err error }
+	} else {
+		type result struct{ msg string }
+	}
+	var count int // local var: no Variable node
+	_ = count
+}
+
+// A local interface called through, like caddy's acmeCapable.
+func announce(v any) {
+	type namer interface{ Name() string }
+	if n, ok := v.(namer); ok {
+		n.Name()
+	}
+}
+
+// In a closure: belongs to the enclosing function until closures get nodes (#13).
+func spawn() {
+	go func() {
+		type job struct{ *store.Store }
+	}()
+}
+
+// Uses T without type params of its own.
+func wrap[T any](v T) {
+	type box struct{ v T }
+	_ = box{v: v}
+}
