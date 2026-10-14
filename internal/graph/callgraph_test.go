@@ -521,58 +521,58 @@ func TestCallGraphCalls(t *testing.T) {
 
 	want := []FunctionCall{
 		// store.New(): function in another package.
-		{Caller: idMain, Callee: idNew, CallerPosition: "main.go:16", CallKind: StaticCall},
+		{Caller: idMain, Callee: idNew, Pos: "main.go:16", CallKind: StaticCall},
 		// s.Get(1) where s is *Store: method on a concrete type.
-		{Caller: idMain, Callee: idGet, CallerPosition: "main.go:17", CallKind: StaticCall,
+		{Caller: idMain, Callee: idGet, Pos: "main.go:17", CallKind: StaticCall,
 			Args: []Arg{{"1", "int"}}},
 		// g.Get(2) where g is store.Getter: points at the interface method.
-		{Caller: idMain, Callee: "(" + storePkg + ".Getter).Get", CallerPosition: "main.go:20", CallKind: InterfaceCall,
+		{Caller: idMain, Callee: "(" + storePkg + ".Getter).Get", Pos: "main.go:20", CallKind: InterfaceCall,
 			Args: []Arg{{"2", "int"}}},
 		// f(u.Name) where f := greet: a function value, target unknown.
-		{Caller: idMain, Callee: "", CallerPosition: "main.go:23", CallKind: DynamicCall,
+		{Caller: idMain, Callee: "", Pos: "main.go:23", CallKind: DynamicCall,
 			Args: []Arg{{"u.Name", "string"}}},
 		// greet("closure") inside func(){...}(): belongs to main.
-		{Caller: idMain, Callee: idGreet, CallerPosition: "main.go:26", CallKind: StaticCall,
+		{Caller: idMain, Callee: idGreet, Pos: "main.go:26", CallKind: StaticCall,
 			Args: []Arg{{`"closure"`, "string"}}},
 		// Nothing for len(u.Name) (built-in) or int64(n) (conversion).
 		// fmt.Println(u): outside the repo, but kept.
-		{Caller: idMain, Callee: "fmt.Println", CallerPosition: "main.go:32", CallKind: StaticCall,
+		{Caller: idMain, Callee: "fmt.Println", Pos: "main.go:32", CallKind: StaticCall,
 			Args: []Arg{{"u", "example.com/simple/model.User"}}},
-		{Caller: idGreet, Callee: "fmt.Println", CallerPosition: "main.go:36", CallKind: StaticCall,
+		{Caller: idGreet, Callee: "fmt.Println", Pos: "main.go:36", CallKind: StaticCall,
 			Args: []Arg{{`"hello"`, "string"}, {"name", "string"}}},
 		// s.mu.Lock(): method reached through a struct field.
-		{Caller: idGet, Callee: "(*sync.Mutex).Lock", CallerPosition: "store/store.go:24", CallKind: StaticCall},
+		{Caller: idGet, Callee: "(*sync.Mutex).Lock", Pos: "store/store.go:24", CallKind: StaticCall},
 		// defer s.mu.Unlock(): deferred calls count too.
-		{Caller: idGet, Callee: "(*sync.Mutex).Unlock", CallerPosition: "store/store.go:25", CallKind: StaticCall},
+		{Caller: idGet, Callee: "(*sync.Mutex).Unlock", Pos: "store/store.go:25", CallKind: StaticCall},
 		// first[int](xs): explicit type arg (IndexExpr), target known (#4).
-		{Caller: idGenerics, Callee: idFirst, CallerPosition: "main.go:46", CallKind: StaticCall,
+		{Caller: idGenerics, Callee: idFirst, Pos: "main.go:46", CallKind: StaticCall,
 			Args: []Arg{{"xs", "[]int"}}},
 		// pair[string, int](...): two type args (IndexListExpr) (#4).
-		{Caller: idGenerics, Callee: idPair, CallerPosition: "main.go:47", CallKind: StaticCall,
+		{Caller: idGenerics, Callee: idPair, Pos: "main.go:47", CallKind: StaticCall,
 			Args: []Arg{{`"a"`, "string"}, {"1", "int"}}},
 		// handlers[0](...): also an IndexExpr, but a func value, so dynamic.
-		{Caller: idGenerics, Callee: "", CallerPosition: "main.go:50", CallKind: DynamicCall,
+		{Caller: idGenerics, Callee: "", Pos: "main.go:50", CallKind: DynamicCall,
 			Args: []Arg{{`"indexed"`, "string"}}},
 		// l.Push(1) on List[int]: callee must be the declared List[T] method (#5).
-		{Caller: idUseList, Callee: idPush, CallerPosition: "main.go:60", CallKind: StaticCall,
+		{Caller: idUseList, Callee: idPush, Pos: "main.go:60", CallKind: StaticCall,
 			Args: []Arg{{"1", "int"}}},
 		// Calls from each init are attributed to that init (#6).
-		{Caller: idInit1, Callee: idGreet, CallerPosition: "main.go:64", CallKind: StaticCall,
+		{Caller: idInit1, Callee: idGreet, Pos: "main.go:64", CallKind: StaticCall,
 			Args: []Arg{{`"init 1"`, "string"}}},
-		{Caller: idInit2, Callee: idGreet, CallerPosition: "main.go:66", CallKind: StaticCall,
+		{Caller: idInit2, Callee: idGreet, Pos: "main.go:66", CallKind: StaticCall,
 			Args: []Arg{{`"init 2"`, "string"}}},
 		// Package-level calls: the caller is the package itself (#7).
-		{Caller: storePkg, Callee: idNew, CallerPosition: "store/vars.go:4", CallKind: StaticCall},
-		{Caller: storePkg, Callee: storePkg + ".load", CallerPosition: "store/vars.go:11", CallKind: StaticCall},
+		{Caller: storePkg, Callee: idNew, Pos: "store/vars.go:4", CallKind: StaticCall},
+		{Caller: storePkg, Callee: storePkg + ".load", Pos: "store/vars.go:11", CallKind: StaticCall},
 		// var _ = register() has no variable node, but the call is still recorded.
-		{Caller: storePkg, Callee: storePkg + ".register", CallerPosition: "store/vars.go:17", CallKind: StaticCall},
+		{Caller: storePkg, Callee: storePkg + ".register", Pos: "store/vars.go:17", CallKind: StaticCall},
 		// Nothing for var _ Getter = (*Store)(nil): a conversion, not a call.
 		// s.Next() on a generic interface: the callee matches the method node's ID.
-		{Caller: mainPkg + ".drain", Callee: "(" + tSource + ").Next", CallerPosition: "main.go:73", CallKind: InterfaceCall},
+		{Caller: mainPkg + ".drain", Callee: "(" + tSource + ").Next", Pos: "main.go:73", CallKind: InterfaceCall},
 		// err.Error(): error is built in, with no package path in its ID.
-		{Caller: mainPkg + ".describe", Callee: "(error).Error", CallerPosition: "main.go:78", CallKind: InterfaceCall},
+		{Caller: mainPkg + ".describe", Callee: "(error).Error", Pos: "main.go:78", CallKind: InterfaceCall},
 		// n.Name() through a local interface: the callee has a node now.
-		{Caller: mainPkg + ".announce", Callee: "(" + tLocalNamer + ").Name", CallerPosition: "main.go:101", CallKind: InterfaceCall},
+		{Caller: mainPkg + ".announce", Callee: "(" + tLocalNamer + ").Name", Pos: "main.go:101", CallKind: InterfaceCall},
 	}
 
 	got := make(map[string]bool)
@@ -609,9 +609,9 @@ func TestCallGraphIsSorted(t *testing.T) {
 		t.Error("Implementations are not sorted by Type, then Interface")
 	}
 	if !slices.IsSortedFunc(g.Calls, func(a, b FunctionCall) int {
-		return cmp.Or(cmp.Compare(a.Caller, b.Caller), cmp.Compare(a.CallerPosition, b.CallerPosition), cmp.Compare(a.Callee, b.Callee))
+		return cmp.Or(cmp.Compare(a.Caller, b.Caller), cmp.Compare(a.Pos, b.Pos), cmp.Compare(a.Callee, b.Callee))
 	}) {
-		t.Error("Calls are not sorted by Caller, then CallerPosition, then Callee")
+		t.Error("Calls are not sorted by Caller, then Pos, then Callee")
 	}
 }
 
@@ -648,5 +648,5 @@ func formatFunction(f Function) string {
 }
 
 func formatCall(c FunctionCall) string {
-	return fmt.Sprintf("%s -> %q at %s (%s) args=%v", c.Caller, c.Callee, c.CallerPosition, c.CallKind, c.Args)
+	return fmt.Sprintf("%s -> %q at %s (%s) args=%v", c.Caller, c.Callee, c.Pos, c.CallKind, c.Args)
 }
