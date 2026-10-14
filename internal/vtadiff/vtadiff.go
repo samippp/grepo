@@ -79,7 +79,7 @@ func Compare(res *load.Result, cg *graph.CallGraph) *Report {
 	oursAt := map[string][]graph.FunctionCall{}
 	var sites []string
 	for _, c := range cg.Calls {
-		k := site(c.Caller, c.CallerPosition)
+		k := site(c.Caller, c.Pos)
 		if oursAt[k] == nil {
 			sites = append(sites, k)
 		}
@@ -113,11 +113,11 @@ func Compare(res *load.Result, cg *graph.CallGraph) *Report {
 			}
 			es := take(targets, used, func(e edge) bool { return methodName(e.callee) == methodName(c.Callee) })
 			if len(es) == 0 {
-				ifaceNone.add("%s → %s @ %s", c.Caller, c.Callee, c.CallerPosition)
+				ifaceNone.add("%s → %s @ %s", c.Caller, c.Callee, c.Pos)
 			}
 			iface := tr.owner[c.Callee] // "" if the interface isn't a repo type
 			for _, e := range es {
-				line := fmt.Sprintf("%s → %s @ %s: target %s (%s)", c.Caller, c.Callee, c.CallerPosition, e.callee, e.targetType)
+				line := fmt.Sprintf("%s → %s @ %s: target %s (%s)", c.Caller, c.Callee, c.Pos, e.callee, e.targetType)
 				switch {
 				case iface == "" || !tr.repoTypes[e.targetType]:
 					ifaceOutside.add("%s", line)
@@ -135,10 +135,10 @@ func Compare(res *load.Result, cg *graph.CallGraph) *Report {
 			}
 			es := take(targets, used, func(edge) bool { return true })
 			if len(es) == 0 {
-				dynNone.add("%s @ %s", c.Caller, c.CallerPosition)
+				dynNone.add("%s @ %s", c.Caller, c.Pos)
 			}
 			for _, e := range es {
-				dynResolved.add("%s @ %s → %s", c.Caller, c.CallerPosition, e.callee)
+				dynResolved.add("%s @ %s → %s", c.Caller, c.Pos, e.callee)
 			}
 		}
 
@@ -146,7 +146,7 @@ func Compare(res *load.Result, cg *graph.CallGraph) *Report {
 		// means the two disagree about the callee.
 		for _, c := range leftoverStatic {
 			if es := take(targets, used, func(edge) bool { return true }); len(es) > 0 {
-				differs.add("%s @ %s: grepo → %s, VTA → %s", c.Caller, c.CallerPosition, c.Callee, calleeList(es))
+				differs.add("%s @ %s: grepo → %s, VTA → %s", c.Caller, c.Pos, c.Callee, calleeList(es))
 			} else {
 				unmatchedOurs = append(unmatchedOurs, c)
 			}
@@ -163,11 +163,11 @@ func Compare(res *load.Result, cg *graph.CallGraph) *Report {
 	// Pair leftovers with the same caller and callee a few lines apart.
 	for _, c := range unmatchedOurs {
 		if i := nearby(unmatchedTheirs, c); i >= 0 {
-			nearLine.add("%s → %s: grepo @ %s, VTA @ %s", c.Caller, c.Callee, c.CallerPosition, unmatchedTheirs[i].pos)
+			nearLine.add("%s → %s: grepo @ %s, VTA @ %s", c.Caller, c.Callee, c.Pos, unmatchedTheirs[i].pos)
 			unmatchedTheirs = slices.Delete(unmatchedTheirs, i, i+1)
 			continue
 		}
-		onlyOurs.add("%s → %s @ %s", c.Caller, c.Callee, c.CallerPosition)
+		onlyOurs.add("%s → %s @ %s", c.Caller, c.Callee, c.Pos)
 	}
 	for _, e := range unmatchedTheirs {
 		onlyVTA.add("%s → %s @ %s", e.caller, e.callee, e.pos)
@@ -413,7 +413,7 @@ func methodName(id string) string {
 
 // nearby finds an unmatched VTA edge with c's caller and callee within 3 lines.
 func nearby(edges []edge, c graph.FunctionCall) int {
-	file, line := splitPos(c.CallerPosition)
+	file, line := splitPos(c.Pos)
 	for i, e := range edges {
 		if e.caller != c.Caller || e.callee != c.Callee {
 			continue

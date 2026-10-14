@@ -88,11 +88,11 @@ type Param struct {
 }
 
 type FunctionCall struct {
-	Caller         string   `json:"caller"`
-	Callee         string   `json:"callee"`
-	CallerPosition string   `json:"callerPosition"`
-	CallKind       CallKind `json:"callKind"`
-	Args           []Arg    `json:"args"`
+	Caller   string   `json:"caller"`
+	Callee   string   `json:"callee"`
+	Pos      string   `json:"pos"`
+	CallKind CallKind `json:"callKind"`
+	Args     []Arg    `json:"args"`
 }
 
 // Arg is one argument at a call site.
@@ -177,7 +177,7 @@ func BuildCallGraph(res *load.Result) *CallGraph {
 	slices.SortFunc(b.calls, func(x, y FunctionCall) int {
 		return cmp.Or(
 			cmp.Compare(x.Caller, y.Caller),
-			cmp.Compare(x.CallerPosition, y.CallerPosition),
+			cmp.Compare(x.Pos, y.Pos),
 			cmp.Compare(x.Callee, y.Callee),
 		)
 	})
@@ -266,10 +266,10 @@ func (b *callGraphBuilder) addCall(callerID string, call *ast.CallExpr) {
 		return
 	}
 	edge := FunctionCall{
-		Caller:         callerID,
-		CallerPosition: b.pos(call.Pos()),
-		CallKind:       callKind(callee),
-		Args:           b.args(call.Args),
+		Caller:   callerID,
+		Pos:      b.pos(call.Pos()),
+		CallKind: callKind(callee),
+		Args:     b.args(call.Args),
 	}
 	if callee != nil {
 		edge.Callee = b.ids.funcID(callee)

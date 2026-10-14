@@ -72,11 +72,11 @@ Value → consts only, exact (constant.Value.ExactString)
 **`FunctionCall`**: one per call site.
 
 ```
-Caller          a function ID, or a package path for package-level calls
-Callee          a function ID; "" for dynamic calls
-CallerPosition  "file:line" of the call (start of the call expression)
-CallKind        static | interface | dynamic
-Args            []{Expr as written, Type}
+Caller    a function ID, or a package path for package-level calls
+Callee    a function ID; "" for dynamic calls
+Pos       "file:line" of the call site (start of the call expression)
+CallKind  static | interface | dynamic
+Args      []{Expr as written, Type}
 ```
 
 **`Implementation`**: a concrete repo type satisfies a repo interface.
@@ -141,7 +141,7 @@ BuildCallGraph
 | Local type | enclosing function's ID + `.name#n`, numbered per name in source order | `…simple.save.result#2` |
 | Field | type ID + `.` + name | `…store.Store.users` |
 | Variable | `pkg.name` | `…store.defaultStore` |
-| Position | `file:line`, relative to the repo root | `store/store.go:23` |
+| Position (`Pos`) | `file:line`, relative to the repo root: where the record's own syntax is. A node's declaration; an edge's site (the call). The other ends' positions are on their nodes. | `store/store.go:23` |
 
 `(X).Name` follows Go's method-expression syntax: `(Getter).Get` is valid Go. Because the receiver is the type's ID, a method's ID always matches its `Owner`, even when the receiver renames type parameters (`func (l *List[E])` → `List[T]`) or is written through an alias (`func (s *S)` with `S = Store` → `Store`).
 
