@@ -30,6 +30,7 @@ CallGraph
 ├── Variables       []Variable         nodes
 ├── Functions       []Function         nodes (incl. methods and interface methods)
 ├── Calls           []FunctionCall     edges: caller → callee
+├── Accesses        []Access           edges: function → var / field it writes
 └── Implementations []Implementation   edges: type → interface
 (+ PackageGraph: package nodes and import edges)
 ```
@@ -79,6 +80,15 @@ CallKind  static | interface | dynamic
 Args      []{Expr as written, Type}
 ```
 
+**`Access`**: one per write site.
+
+```
+Accessor  a function ID, or a package path for package-level values
+Target    a VarID or FieldID, in the repo or not
+Pos       "file:line" of the write
+Kind      assign | update | content | construct   (read: later)
+```
+
 **`Implementation`**: a concrete repo type satisfies a repo interface.
 
 ```
@@ -117,13 +127,16 @@ BuildCallGraph
   for each package → file → declaration:
     FuncDecl → handleFuncDecl      Function node (ID via assignFuncDeclID, Owner via receiverOwner)
                 └ walkBody  ast.Inspect the body: calls → addCall → callee() / callKind() / args();
-                            local TYPE decls → assignLocalTypeID + handleTypeSpec
+                            local TYPE decls → assignLocalTypeID + handleTypeSpec;
+                            writes (writes.go): =, op=, ++, range = → addAssign / addWrite;
+                            struct literals → addConstruct; delete/clear/copy → addBuiltinWrite
     GenDecl  → handleGenDecl       switch on token:
                 ├ TYPE      → handleTypeSpec   Type node; struct → structFields;
                 │                              interface → embeds + addInterfaceMethod;
                 │                              collects concrete / interface objects
-                └ VAR/CONST → handleValueSpec  Variable nodes; calls in values with
-                                               the package as caller
+                └ VAR/CONST → handleValueSpec  Variable nodes; construct edges for vars
+                                               with a value; calls and writes in values
+                                               with the package as caller
   after the walk:
     addImplementations   method-name index → candidates → types.Implements
     sort every list
@@ -141,7 +154,7 @@ BuildCallGraph
 | Local type | enclosing function's ID + `.name#n`, numbered per name in source order | `…simple.save.result#2` |
 | Field | type ID + `.` + name | `…store.Store.users` |
 | Variable | `pkg.name` | `…store.defaultStore` |
-| Position (`Pos`) | `file:line`, relative to the repo root: where the record's own syntax is. A node's declaration; an edge's site (the call). The other ends' positions are on their nodes. | `store/store.go:23` |
+| Position (`Pos`) | `file:line`, relative to the repo root: where the record's own syntax is. A node's declaration; an edge's site (the call, the write; a literal's field). The other ends' positions are on their nodes. | `store/store.go:23` |
 
 `(X).Name` follows Go's method-expression syntax: `(Getter).Get` is valid Go. Because the receiver is the type's ID, a method's ID always matches its `Owner`, even when the receiver renames type parameters (`func (l *List[E])` → `List[T]`) or is written through an alias (`func (s *S)` with `S = Store` → `Store`).
 
@@ -184,6 +197,20 @@ BuildCallGraph
 - Computed after the walk, from type-checker objects kept during it, so it stays consistent with what the walk records.
 - A method-name index (first method as key) picks candidates; `types.Implements` decides.
 
+### Writes (Access)
+- Purpose: who changes which state. Field roles for the MCP (config vs. live state vs. dead), ranking important vars and fields, data flow through shared state, side effects.
+- Writes first; reads later as another kind on the same edge, so `Access` is one list with kinds, like `Calls` with `CallKind`.
+- Kinds are recorded because only the walker sees the syntax; later consumers would have to re-parse.
+  - `assign`: `x = v`, `s.f = v`, one edge per left-hand item.
+  - `update`: `x++`, `x += v`, or an `=` whose right side reads the same expression (`s.items = append(s.items, v)`). Same expression, not same ID: `b.N = o.N + 1` is an assign.
+  - `content`: writing into what a field or var holds: `x[k] = v`, `x[k]++`, `*x = v`, `delete` / `clear` / `copy` (built-ins, so certain).
+  - `construct`: a struct literal's fields (`T{f: v}`, positional by index), and a package var's initial value (by the package). Kept apart from `assign` so "set at construction, never mutated" is visible.
+- Paths: writing through a struct-valued field also changes it: `s.inner.x = 1` is `assign Inner.x` + `content Store.inner`, for every struct value on the path (embedded ones too), stopping at a pointer or an index.
+- Field IDs are per type, so a field write counts whatever the root (`u.Name = x` on a local `u` is `User.Name`). Writes to locals themselves (`local = v`, `*p = v`, `local[i] = v`) get no edge.
+- Outside targets are kept (`os.Args`, `net/http.Server.Addr`), like outside callees.
+- One edge per site, with `Pos`; aggregate later if needed.
+- Not writes: taking an address (`&x`, pointer-method calls like `s.mu.Lock()`) and passing slices or maps to functions (`slices.Sort(s.items)`). The write happens elsewhere, or never: see open items.
+
 ### Variables
 - Package level only: local `var` / `const` get no node (an LLM reads function bodies from source).
 - `var` and `const` share one struct, with a `Const` flag. Consts store exact values; untyped consts keep `untyped int`.
@@ -203,5 +230,7 @@ BuildCallGraph
 | #8: type arguments on generic calls | deferred to M5 |
 | #13: closure nodes | open; likely with M5 |
 | #14: implementations of outside interfaces | open |
+| Escapes: `&x`, pointer-method calls, slices / maps passed to functions | not writes; a separate edge later ("address escapes here"), linked to the call |
+| Aliasing through locals | `m := s.users; m[k] = v` writes into `Store.users` but gets no edge |
 | Type strings of local types | `types.TypeString` prints a local `result` as `pkg.result`, so a param or field of a local type doesn't show its `#n` ID |
 | M4: explanation cache | key on a hash of the node's source, not its ID: a stable ID doesn't mean unchanged code |
