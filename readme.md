@@ -1,15 +1,15 @@
 # grepo
 Grep + Repo: 
-Paste a GitHub link to a Go repository and get a browsable wiki showing how data flows between its packages.
+Find out how data flows through a Go repository: who calls what, what runs behind an interface, and who changes which state.
 
-grepo has two front ends that share one analysis pipeline:
+grepo has two front ends that share one analysis pipeline and query layer:
 
-- **Web app (the main product, M3):** paste a GitHub link, get the wiki.
-- **CLI:** analyze links or local checkouts, including private code you already have on disk.
+- **CLI (first, M3):** answer questions about the repo you're in from the terminal, including private code you already have on disk. For engineers who'd rather go straight to the code than read a wiki.
+- **Web app (M5):** paste a GitHub link, get a browsable wiki with diagrams.
 
 ## Status
 
-**M0: package graph.** `grepo analyze` takes a GitHub link or local path and outputs the package import graph as JSON.
+**M1: call graph.** `grepo analyze` takes a GitHub link or local path and outputs JSON: the package import graph, plus types, variables, functions, calls, interface implementations and writes.
 
 ## Usage
 
@@ -36,9 +36,8 @@ Requirements:
 ## Pipeline
 
 ```
-GitHub link ──► source ──► load ──► graph ──► store* ──► llm*
-                  ▲                                        │
-      cli (now), server* (web app)        server* ──► browser wiki
+GitHub link ──► source ──► load ──► graph ──► store* ──► query* ──► cli commands*
+ or local path                                                 └──► server* ──► browser wiki (+ llm*)
 ```
 
 `*` = planned.
@@ -57,13 +56,37 @@ internal/graph/    builds graphs from loaded packages
 ## Roadmap
 
 - **M0:** GitHub link input, package import graph ✅
-- **M1a:** symbols, signatures and direct calls (hand-written AST walker) 🚧
-- **M1b:** interface calls resolved to their implementations
-- **M1c:** channel send/receive flows
-- **M1d:** check the call graph against x/tools' VTA in tests
-- **M1e:** SQLite storage keyed by repo + commit
-- **M2:** side-effect and entry-point detection
-- **M3:** web app: paste a link, background analysis job, wiki pages
-- **M4:** LLM summaries
-- **M5:** end-to-end flows
-- **M6:** scale, and hosted deployment (sandboxed workers, rate limits)
+- **M1: the graph**
+  - **M1a:** symbols, signatures and direct calls (hand-written AST walker) ✅
+  - **M1b:** interface calls resolved to their implementations ✅
+  - **M1c:** check the call graph against x/tools' VTA (`grepo vta-diff`) ✅
+  - **M1d:** writes to package vars and struct fields ✅
+- **M2: store + query layer** (modeled on gopls' cache)
+  - **M2a: incremental store**
+    - metadata-only first load (`go list`, no type-checking): package graph right away
+    - SQLite store, one entry per package, keyed by a hash of its files, its dependencies' keys and the build config
+    - edits rebuild the changed package and its reverse imports; everything else is reused
+    - implementations from per-package method sets and interfaces, matched across packages afterwards
+    - own loader: `go list` + `go/types`, dependencies type-checked from source without bodies, type summaries cached per package
+  - **M2b: query layer**
+    - short names (`Store.users`, `store.Get`) resolved to IDs, with ambiguity handling
+    - defaults to the package in the current directory
+    - loads only what a command needs (downstream: the package and its imports; upstream: the module)
+  - **M2c: cold start**
+    - background indexing with progress; commands use whatever is ready
+    - partial pass without dependencies: answers in seconds, marked partial until the full load lands
+    - `--no-cgo`
+    - import a graph built elsewhere (e.g. by CI), then rebuild only what changed locally
+- **M3: CLI commands** (human output with editor-clickable `file:line`, plus `--json`)
+  - `state <type|var>`: who writes each field or var, by kind, with a role (config, live state, counter, no writes found)
+  - `callers` / `callees <func>`: call trees that expand interface calls into their implementations
+  - `pkg [path]`: imports and imported-by, exported API ranked by callers, owned state and its writers, outside calls
+  - `impact <symbol>`: everything that reaches it through calls and writes, rolled up by package
+- **M4: deeper facts**
+  - reads, for dead-field detection and safer mutability claims
+  - side effects (`effects <func>`: reaches I/O, network, database, exec, globals)
+  - entry points (`entry`: main, init, HTTP handlers, CLI commands, exported API)
+- **M5:** web app: paste a link, background analysis job, wiki pages built on the same queries
+- **M6:** LLM summaries
+- **M7:** end-to-end flows (`path <from> <to>`), channel send/receive flows
+- **M8:** scale, and hosted deployment (sandboxed workers, rate limits, shared module caches, `grepo pull` for prebuilt public graphs); a gopls-style daemon only if the on-disk cache isn't fast enough

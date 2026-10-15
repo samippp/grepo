@@ -218,6 +218,16 @@ BuildCallGraph
 - Blank (`_`) variables get no node, but calls in their values are still recorded.
 - Package-level calls use the package as the caller: an existing node, nothing synthetic.
 
+### Loading (M2a, planned)
+- Our own loader: `go list` metadata plus `go/types` directly, replacing `go/packages`. Dependencies are type-checked from source, not compiled.
+- Why not compiler export data (`go list -export`): it compiles dependencies with code generation the walker never uses. Cold caddy: ~34s compiling vs ~1–2s type-checking from source; downloads (~50s) are the same either way.
+- Why not `go/packages` with `NeedDeps`: it can't take cached types, so every load re-type-checks all dependencies, and it keeps syntax and `TypesInfo` for every one of them.
+- Dependencies: function bodies dropped before type-checking (dependents only need declarations); only their types are kept; errors in them are ignored (dropping bodies leaves unused imports).
+- Each package's type summary is cached (`gcexportdata`) next to its graph entry, so unchanged packages are imported from the cache and an edit re-checks only the changed package and its reverse imports.
+- The importer decides what a missing package becomes, so the partial pass (M2c) uses the same path.
+- Given up: reusing the user's warm `go build` cache, and the Go tooling quirks `go/packages` handles (build tags, cgo files, vendor, `go.work`, overlays) that are now ours to get right through `go list`.
+- To check: memory on large repos, and per-package errors (cgo especially).
+
 ### Process
 - Fixture-first: failing tests before implementation; fixture additions are appended so existing line numbers don't move.
 - Dispatch functions per node kind (`handleGenDecl` → `handleTypeSpec` / `handleValueSpec`); helpers are extracted only when they remove real noise.
@@ -228,10 +238,10 @@ BuildCallGraph
 
 | Item | Status |
 |---|---|
-| #8: type arguments on generic calls | deferred to M5 |
-| #13: closure nodes | open; likely with M5 |
+| #8: type arguments on generic calls | deferred to M7 |
+| #13: closure nodes | open; likely with M7 |
 | #14: implementations of outside interfaces | open |
 | Escapes: `&x`, pointer-method calls, slices / maps passed to functions | not writes; a separate edge later ("address escapes here"), linked to the call |
 | Aliasing through locals | `m := s.users; m[k] = v` writes into `Store.users` but gets no edge |
 | Type strings of local types | `types.TypeString` prints a local `result` as `pkg.result`, so a param or field of a local type doesn't show its `#n` ID |
-| M4: explanation cache | key on a hash of the node's source, not its ID: a stable ID doesn't mean unchanged code |
+| M6: explanation cache | key on a hash of the node's source, not its ID: a stable ID doesn't mean unchanged code |
