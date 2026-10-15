@@ -78,3 +78,18 @@ func (b *Box) ranges(xs []int) {
 	for b.N = range xs {
 	}
 }
+
+// Explicit deref: the same write as b.Ptr.X = 1.
+func (b *Box) derefs() {
+	(*b.Ptr).X = 1
+}
+
+// An embedded pointer: writing wrapped.X changes what Wrapped.Inner points to,
+// not wrapped itself.
+type Wrapped struct{ *Inner }
+
+var wrapped Wrapped
+
+func promoted() {
+	wrapped.X = 1
+}

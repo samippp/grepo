@@ -205,7 +205,8 @@ BuildCallGraph
   - `update`: `x++`, `x += v`, or an `=` whose right side reads the same expression (`s.items = append(s.items, v)`). Same expression, not same ID: `b.N = o.N + 1` is an assign.
   - `content`: writing into what a field or var holds: `x[k] = v`, `x[k]++`, `*x = v`, `delete` / `clear` / `copy` (built-ins, so certain).
   - `construct`: a struct literal's fields (`T{f: v}`, positional by index), and a package var's initial value (by the package). Kept apart from `assign` so "set at construction, never mutated" is visible.
-- Paths: writing through a struct-valued field also changes it: `s.inner.x = 1` is `assign Inner.x` + `content Store.inner`, for every struct value on the path (embedded ones too), stopping at a pointer or an index.
+- Paths: writing through a struct-valued field also changes it: `s.inner.x = 1` is `assign Inner.x` + `content Store.inner`, for every struct value on the path (embedded ones too).
+- The walk stops at the first slice, map or pointer, and the field holding it gets `content`: `s.ptr.x = 1` is `assign T.x` + `content Store.ptr`, like `s.items[0].x = 1` gives `content Store.items`. So `content F` means the data F gives access to changed, not F's own bytes; `(*s.ptr).x` and `s.ptr.x` agree.
 - Field IDs are per type, so a field write counts whatever the root (`u.Name = x` on a local `u` is `User.Name`). Writes to locals themselves (`local = v`, `*p = v`, `local[i] = v`) get no edge.
 - Outside targets are kept (`os.Args`, `net/http.Server.Addr`), like outside callees.
 - One edge per site, with `Pos`; aggregate later if needed.
