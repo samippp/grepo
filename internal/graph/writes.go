@@ -56,6 +56,7 @@ func (b *callGraphBuilder) addConstruct(accessor string, lit *ast.CompositeLit) 
 	if !ok || named == nil {
 		return // not a struct, or an unnamed struct type: no field IDs
 	}
+	owner := b.ids.typeID(named.Origin().Obj()) // List[int]{...} → List[T]
 	for i, elt := range lit.Elts {
 		var field *types.Var
 		if kv, ok := elt.(*ast.KeyValueExpr); ok {
@@ -64,7 +65,7 @@ func (b *callGraphBuilder) addConstruct(accessor string, lit *ast.CompositeLit) 
 			field = st.Field(i) // positional
 		}
 		if field != nil {
-			b.addAccess(accessor, b.fieldID(named, field), ConstructAccess, elt.Pos())
+			b.accesses = append(b.accesses, Access{Accessor: accessor, Target: FieldID(owner, field.Name()), Pos: b.pos(elt.Pos()), Kind: ConstructAccess})
 		}
 	}
 }
@@ -84,29 +85,34 @@ func (b *callGraphBuilder) addWrite(accessor string, e ast.Expr, kind AccessKind
 		b.addWriteInto(accessor, x.X, x.Pos())
 	case *ast.Ident:
 		if v := packageVar(b.pkg.TypesInfo.Uses[x]); v != nil {
-			b.addAccess(accessor, VarID(v), kind, x.Pos())
+			b.accesses = append(b.accesses, Access{Accessor: accessor, Target: VarID(v), Pos: b.pos(x.Pos()), Kind: kind})
 		}
 		// Locals: no edge.
 	case *ast.SelectorExpr:
 		sel := b.pkg.TypesInfo.Selections[x]
 		if sel == nil { // pkg.Var
 			if v := packageVar(b.pkg.TypesInfo.Uses[x.Sel]); v != nil {
-				b.addAccess(accessor, VarID(v), kind, x.Pos())
+				b.accesses = append(b.accesses, Access{Accessor: accessor, Target: VarID(v), Pos: b.pos(x.Pos()), Kind: kind})
 			}
 			return
 		}
 		if sel.Kind() != types.FieldVal {
 			return
 		}
-		steps := fieldPath(sel)
+		steps := b.fieldPath(sel)
 		last := len(steps) - 1
-		b.addFieldAccess(accessor, steps[last], kind, x.Pos())
+		pos := b.pos(x.Pos())
+		if id := steps[last].id; id != "" {
+			b.accesses = append(b.accesses, Access{Accessor: accessor, Target: id, Pos: pos, Kind: kind})
+		}
 		// Out through promoted fields (t.Name via embedded User), then to x.X.
 		for i := last; i > 0; i-- {
 			if steps[i].viaPointer {
 				return
 			}
-			b.addFieldAccess(accessor, steps[i-1], ContentAccess, x.Pos())
+			if id := steps[i-1].id; id != "" {
+				b.accesses = append(b.accesses, Access{Accessor: accessor, Target: id, Pos: pos, Kind: ContentAccess})
+			}
 		}
 		if !steps[0].viaPointer {
 			b.addWrite(accessor, x.X, ContentAccess)
@@ -123,7 +129,7 @@ func (b *callGraphBuilder) addWriteInto(accessor string, e ast.Expr, pos token.P
 		return
 	}
 	if id := b.writeTarget(e); id != "" {
-		b.addAccess(accessor, id, ContentAccess, pos)
+		b.accesses = append(b.accesses, Access{Accessor: accessor, Target: id, Pos: b.pos(pos), Kind: ContentAccess})
 	}
 }
 
@@ -144,8 +150,8 @@ func (b *callGraphBuilder) writeTarget(e ast.Expr) string {
 			return ""
 		}
 		if sel.Kind() == types.FieldVal {
-			steps := fieldPath(sel)
-			return b.stepID(steps[len(steps)-1])
+			steps := b.fieldPath(sel)
+			return steps[len(steps)-1].id
 		}
 	case *ast.IndexExpr:
 		return b.writeTarget(x.X)
@@ -184,16 +190,15 @@ func (b *callGraphBuilder) sameExpr(x, y ast.Expr) bool {
 	return false
 }
 
-// fieldStep is one field on a selector's path, with the struct it belongs to.
+// fieldStep is one field on a selector's path.
 type fieldStep struct {
-	owner      *types.Named // nil for an unnamed struct type
-	field      *types.Var
-	viaPointer bool // the owner was reached through a pointer
+	id         string // "" for a field of an unnamed struct type
+	viaPointer bool   // its struct was reached through a pointer
 }
 
 // fieldPath lists the fields sel goes through, outermost first: t.Name with
 // an embedded User is [Tagged.User, User.Name].
-func fieldPath(sel *types.Selection) []fieldStep {
+func (b *callGraphBuilder) fieldPath(sel *types.Selection) []fieldStep {
 	var steps []fieldStep
 	typ := sel.Recv()
 	for _, i := range sel.Index() {
@@ -201,32 +206,14 @@ func fieldPath(sel *types.Selection) []fieldStep {
 		if p, ok := typ.Underlying().(*types.Pointer); ok {
 			typ, step.viaPointer = p.Elem(), true
 		}
-		step.owner, _ = types.Unalias(typ).(*types.Named)
-		step.field = typ.Underlying().(*types.Struct).Field(i)
+		field := typ.Underlying().(*types.Struct).Field(i)
+		if named, ok := types.Unalias(typ).(*types.Named); ok {
+			step.id = FieldID(b.ids.typeID(named.Origin().Obj()), field.Name()) // List[int].items → List[T].items
+		}
 		steps = append(steps, step)
-		typ = step.field.Type()
+		typ = field.Type()
 	}
 	return steps
-}
-
-// addFieldAccess records an access to step's field, unless its struct has
-// no name (and so no ID).
-func (b *callGraphBuilder) addFieldAccess(accessor string, step fieldStep, kind AccessKind, pos token.Pos) {
-	if id := b.stepID(step); id != "" {
-		b.addAccess(accessor, id, kind, pos)
-	}
-}
-
-func (b *callGraphBuilder) stepID(step fieldStep) string {
-	if step.owner == nil {
-		return ""
-	}
-	return b.fieldID(step.owner, step.field)
-}
-
-// fieldID is the field's ID on its declared type: List[int].items → List[T].items.
-func (b *callGraphBuilder) fieldID(owner *types.Named, field *types.Var) string {
-	return FieldID(b.ids.typeID(owner.Origin().Obj()), field.Name())
 }
 
 // packageVar returns obj if it's a package-level var, in the repo or not.
@@ -236,8 +223,4 @@ func packageVar(obj types.Object) *types.Var {
 		return nil
 	}
 	return v
-}
-
-func (b *callGraphBuilder) addAccess(accessor, target string, kind AccessKind, pos token.Pos) {
-	b.accesses = append(b.accesses, Access{Accessor: accessor, Target: target, Pos: b.pos(pos), Kind: kind})
 }

@@ -427,7 +427,7 @@ func (b *callGraphBuilder) handleValueSpec(spec *ast.ValueSpec) {
 		if cnst, ok := obj.(*types.Const); ok {
 			node.Const, node.Value = true, cnst.Val().ExactString()
 		} else if len(spec.Values) > 0 {
-			b.addAccess(b.pkg.PkgPath, node.ID, ConstructAccess, name.Pos()) // its initial value
+			b.accesses = append(b.accesses, Access{Accessor: b.pkg.PkgPath, Target: node.ID, Pos: b.pos(name.Pos()), Kind: ConstructAccess}) // its initial value
 		}
 		b.variables = append(b.variables, node)
 	}
