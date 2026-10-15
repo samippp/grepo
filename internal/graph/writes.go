@@ -40,7 +40,7 @@ func (b *callGraphBuilder) addBuiltinWrite(accessor string, call *ast.CallExpr) 
 	if builtin, ok := b.pkg.TypesInfo.Uses[name].(*types.Builtin); ok {
 		switch builtin.Name() {
 		case "delete", "clear", "copy":
-			b.addWriteInto(accessor, call.Args[0], call.Pos())
+			b.addContentWrite(accessor, call.Args[0], call.Pos())
 		}
 	}
 }
@@ -78,11 +78,11 @@ func (b *callGraphBuilder) addWrite(accessor string, e ast.Expr, kind AccessKind
 	}
 	switch x := ast.Unparen(e).(type) {
 	case *ast.IndexExpr:
-		b.addWriteInto(accessor, x.X, x.Pos()) // the index decides: x[k]++ is content
+		b.addContentWrite(accessor, x.X, x.Pos()) // the index decides: x[k]++ is content
 	case *ast.SliceExpr:
-		b.addWriteInto(accessor, x.X, x.Pos())
+		b.addContentWrite(accessor, x.X, x.Pos())
 	case *ast.StarExpr:
-		b.addWriteInto(accessor, x.X, x.Pos())
+		b.addContentWrite(accessor, x.X, x.Pos())
 	case *ast.Ident:
 		if v := packageVar(b.pkg.TypesInfo.Uses[x]); v != nil {
 			b.accesses = append(b.accesses, Access{Accessor: accessor, Target: VarID(v), Pos: b.pos(x.Pos()), Kind: kind})
@@ -120,22 +120,22 @@ func (b *callGraphBuilder) addWrite(accessor string, e ast.Expr, kind AccessKind
 	}
 }
 
-// addWriteInto records a write into what e holds: e[k] = v, *e = v,
+// addContentWrite records a write into what e holds: e[k] = v, *e = v,
 // delete(e, k). An array's elements are its own memory, so that's a write
 // to e itself; a slice, map or pointer's are shared, so only e is recorded.
-func (b *callGraphBuilder) addWriteInto(accessor string, e ast.Expr, pos token.Pos) {
+func (b *callGraphBuilder) addContentWrite(accessor string, e ast.Expr, pos token.Pos) {
 	if _, ok := b.pkg.TypesInfo.TypeOf(e).Underlying().(*types.Array); ok {
 		b.addWrite(accessor, e, ContentAccess)
 		return
 	}
-	if id := b.writeTarget(e); id != "" {
+	if id := b.holderID(e); id != "" {
 		b.accesses = append(b.accesses, Access{Accessor: accessor, Target: id, Pos: b.pos(pos), Kind: ContentAccess})
 	}
 }
 
-// writeTarget is the ID of the var or field e names, looking through
+// holderID is the ID of the var or field e names, looking through
 // indexes and derefs (s.m[a][b] → s.m), or "" for locals and expressions.
-func (b *callGraphBuilder) writeTarget(e ast.Expr) string {
+func (b *callGraphBuilder) holderID(e ast.Expr) string {
 	switch x := ast.Unparen(e).(type) {
 	case *ast.Ident:
 		if v := packageVar(b.pkg.TypesInfo.Uses[x]); v != nil {
@@ -154,11 +154,11 @@ func (b *callGraphBuilder) writeTarget(e ast.Expr) string {
 			return steps[len(steps)-1].id
 		}
 	case *ast.IndexExpr:
-		return b.writeTarget(x.X)
+		return b.holderID(x.X)
 	case *ast.SliceExpr:
-		return b.writeTarget(x.X)
+		return b.holderID(x.X)
 	case *ast.StarExpr:
-		return b.writeTarget(x.X)
+		return b.holderID(x.X)
 	}
 	return ""
 }
