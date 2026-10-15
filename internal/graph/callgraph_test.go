@@ -59,6 +59,10 @@ const (
 	tLocalNamer  = mainPkg + ".announce.namer#1"
 	tJob         = mainPkg + ".spawn.job#1"
 	tBox         = mainPkg + ".wrap.box#1"
+
+	// Writes fixture (store/writes.go).
+	tWInner = storePkg + ".Inner"
+	tWBox   = storePkg + ".Box"
 )
 
 func buildFixtureCallGraph(t *testing.T) *CallGraph {
@@ -263,6 +267,37 @@ func TestCallGraphFunctions(t *testing.T) {
 			Params: []Param{{Name: "v", Type: "T"}},
 			Pos:    "main.go:113",
 		},
+		{
+			ID: "(*" + tWBox + ").Writes", Name: "Writes", Package: storePkg,
+			Receiver: &Param{Name: "b", Type: "*" + tWBox},
+			Params:   []Param{{Name: "o", Type: "*" + tWBox}, {Name: "src", Type: "[]byte"}},
+			Exported: true,
+			Pos:      "store/writes.go:30",
+			Owner:    tWBox,
+		},
+		{ID: storePkg + ".locals", Name: "locals", Package: storePkg, Pos: "store/writes.go:52"},
+		{
+			ID: storePkg + ".build", Name: "build", Package: storePkg,
+			Results: []Param{{Name: "", Type: "*" + tWBox}},
+			Pos:     "store/writes.go:60",
+		},
+		{
+			ID: storePkg + ".points", Name: "points", Package: storePkg,
+			Results: []Param{{Name: "", Type: "[]" + tWInner}},
+			Pos:     "store/writes.go:64",
+		},
+		{
+			ID: storePkg + ".outside", Name: "outside", Package: storePkg,
+			Results: []Param{{Name: "", Type: "*net/http.Server"}},
+			Pos:     "store/writes.go:71",
+		},
+		{
+			ID: "(*" + tWBox + ").ranges", Name: "ranges", Package: storePkg,
+			Receiver: &Param{Name: "b", Type: "*" + tWBox},
+			Params:   []Param{{Name: "xs", Type: "[]int"}},
+			Pos:      "store/writes.go:77",
+			Owner:    tWBox,
+		},
 	}
 
 	got := make(map[string]Function)
@@ -405,6 +440,25 @@ func TestCallGraphTypes(t *testing.T) {
 			Pos:    "main.go:114",
 			Fields: []Field{{ID: tBox + ".v", Name: "v", Type: "T", Pos: "main.go:114"}},
 		},
+		{
+			ID: tWInner, Name: "Inner", Package: storePkg, Kind: StructType, Exported: true,
+			Pos:    "store/writes.go:12",
+			Fields: []Field{{ID: tWInner + ".X", Name: "X", Type: "int", Pos: "store/writes.go:12"}},
+		},
+		{
+			ID: tWBox, Name: "Box", Package: storePkg, Kind: StructType, Exported: true,
+			Pos: "store/writes.go:14",
+			Fields: []Field{
+				{ID: tWBox + ".N", Name: "N", Type: "int", Pos: "store/writes.go:15"},
+				{ID: tWBox + ".Name", Name: "Name", Type: "string", Pos: "store/writes.go:16"},
+				{ID: tWBox + ".Items", Name: "Items", Type: "[]int", Pos: "store/writes.go:17"},
+				{ID: tWBox + ".Inner", Name: "Inner", Type: tWInner, Pos: "store/writes.go:18"},
+				{ID: tWBox + ".Ptr", Name: "Ptr", Type: "*" + tWInner, Pos: "store/writes.go:19"},
+				{ID: tWBox + ".Buf", Name: "Buf", Type: "[4]byte", Pos: "store/writes.go:20"},
+				{ID: tWBox + ".Users", Name: "Users", Type: "map[int]" + tUser, Pos: "store/writes.go:21"},
+				{ID: tWBox + ".Tags", Name: "Tags", Type: "[]" + tTagged, Pos: "store/writes.go:22"},
+			},
+		},
 	}
 
 	got := make(map[string]Type)
@@ -494,6 +548,8 @@ func TestCallGraphVariables(t *testing.T) {
 		c("Green", "untyped int", "1", "27", true),
 		c("Blue", "untyped int", "2", "28", true),
 		// No node for save's local var count.
+		{ID: storePkg + ".Counter", Name: "Counter", Package: storePkg, Type: "int", Exported: true, Pos: "store/writes.go:25"},
+		{ID: storePkg + ".defaultBox", Name: "defaultBox", Package: storePkg, Type: tWBox, Pos: "store/writes.go:28"},
 	}
 
 	got := make(map[string]Variable)
@@ -591,6 +647,106 @@ func TestCallGraphCalls(t *testing.T) {
 	}
 }
 
+func TestCallGraphAccesses(t *testing.T) {
+	g := buildFixtureCallGraph(t)
+
+	idWrites := "(*" + tWBox + ").Writes"
+	w := func(accessor, target, pos string, kind AccessKind) Access {
+		return Access{Accessor: accessor, Target: target, Pos: pos, Kind: kind}
+	}
+	at := func(line string) string { return "store/writes.go:" + line }
+
+	want := []Access{
+		// Existing fixture code. Literals construct their fields; package vars with a value
+		// are constructed by the package. Timeout has no value, so no edge.
+		w(idNew, tStore+".users", "store/store.go:21", ConstructAccess),
+		w("("+tCache+").Get", tUser+".ID", "store/cache.go:9", ConstructAccess),
+		w(storePkg, storePkg+".defaultStore", "store/vars.go:4", ConstructAccess),
+		w(storePkg, storePkg+".a", "store/vars.go:8", ConstructAccess),
+		w(storePkg, storePkg+".b", "store/vars.go:8", ConstructAccess),
+		w(storePkg, storePkg+".first", "store/vars.go:11", ConstructAccess),
+		w(storePkg, storePkg+".err", "store/vars.go:11", ConstructAccess),
+		// l.items = append(l.items, v) through List[T]: the generic field, and an update.
+		w(idPush, tList+".items", "main.go:56", UpdateAccess),
+		// A local type's field.
+		w(mainPkg+".wrap", tBox+".v", "main.go:115", ConstructAccess),
+
+		// var defaultBox = Box{Name: "d"}: the var and the literal's field.
+		w(storePkg, storePkg+".defaultBox", at("28"), ConstructAccess),
+		w(storePkg, tWBox+".Name", at("28"), ConstructAccess),
+
+		w(idWrites, tWBox+".N", at("31"), AssignAccess),
+		w(idWrites, tWBox+".N", at("32"), UpdateAccess), // ++
+		w(idWrites, tWBox+".N", at("33"), UpdateAccess), // +=
+		w(idWrites, tWBox+".N", at("34"), UpdateAccess), // b.N = b.N + 1: same expression on the right
+		w(idWrites, tWBox+".N", at("35"), AssignAccess), // b.N = o.N + 1: same field ID, different object
+		w(idWrites, tWBox+".Items", at("36"), UpdateAccess),
+		// b.Users[1] = model.User{}: an empty literal constructs nothing.
+		w(idWrites, tWBox+".Users", at("37"), ContentAccess),
+		w(idWrites, tWBox+".Users", at("38"), ContentAccess),
+		w(idWrites, tUser+".Name", at("38"), ConstructAccess),
+		w(idWrites, tWBox+".Items", at("39"), ContentAccess), // b.Items[0]++: the index decides
+		w(idWrites, tWBox+".Users", at("40"), ContentAccess), // delete
+		w(idWrites, tWBox+".Items", at("41"), ContentAccess), // clear
+		w(idWrites, tWBox+".Buf", at("42"), ContentAccess),   // copy(b.Buf[:], ...): a slice of the field
+		w(idWrites, tWBox+".Buf", at("43"), ContentAccess),
+		// b.Inner.X = 1: Inner is a struct value, so Box's memory changes too.
+		w(idWrites, tWInner+".X", at("44"), AssignAccess),
+		w(idWrites, tWBox+".Inner", at("44"), ContentAccess),
+		// b.Ptr.X = 1: past a pointer, Ptr itself is unchanged.
+		w(idWrites, tWInner+".X", at("45"), AssignAccess),
+		w(idWrites, tWBox+".Ptr", at("46"), ContentAccess), // *b.Ptr = Inner{}
+		// b.Tags[0].Name = "t": Name is promoted from the embedded User value; the index
+		// into Tags writes its contents and stops the path.
+		w(idWrites, tUser+".Name", at("47"), AssignAccess),
+		w(idWrites, tTagged+".User", at("47"), ContentAccess),
+		w(idWrites, tWBox+".Tags", at("47"), ContentAccess),
+		w(idWrites, storePkg+".Counter", at("48"), AssignAccess),
+		// b.N, Counter = 4, 5: one edge per left-hand item.
+		w(idWrites, tWBox+".N", at("49"), AssignAccess),
+		w(idWrites, storePkg+".Counter", at("49"), AssignAccess),
+
+		// Field writes count whatever the root; writes to locals themselves don't.
+		// Nothing for local := Box{} (empty), p := &local, or *p = Box{}.
+		w(storePkg+".locals", tWBox+".N", at("54"), AssignAccess),
+		w(storePkg+".locals", tWBox+".N", at("55"), ConstructAccess),
+
+		w(storePkg+".build", tWBox+".N", at("61"), ConstructAccess),
+		w(storePkg+".build", tWBox+".Inner", at("61"), ConstructAccess),
+		w(storePkg+".build", tWInner+".X", at("61"), ConstructAccess),
+		// Elided types; {2} is positional.
+		w(storePkg+".points", tWInner+".X", at("66"), ConstructAccess),
+		w(storePkg+".points", tWInner+".X", at("67"), ConstructAccess),
+
+		// Outside targets are kept. DefaultClient is a pointer: no edge for the var itself.
+		w(storePkg+".outside", "os.Args", at("72"), AssignAccess),
+		w(storePkg+".outside", "net/http.Client.Timeout", at("73"), AssignAccess),
+		w(storePkg+".outside", "net/http.Server.Addr", at("74"), ConstructAccess),
+
+		// for b.N = range xs: assigned each iteration.
+		w("(*"+tWBox+").ranges", tWBox+".N", at("78"), AssignAccess),
+	}
+
+	// Counted, so a duplicated edge shows up as unexpected.
+	got := make(map[string]int)
+	for _, a := range g.Accesses {
+		got[formatAccess(a)]++
+	}
+	for _, w := range want {
+		key := formatAccess(w)
+		if got[key] == 0 {
+			t.Errorf("missing access %s", key)
+			continue
+		}
+		got[key]--
+	}
+	for key, n := range got {
+		for range n {
+			t.Errorf("unexpected access %s", key)
+		}
+	}
+}
+
 func TestCallGraphIsSorted(t *testing.T) {
 	g := buildFixtureCallGraph(t)
 
@@ -612,6 +768,11 @@ func TestCallGraphIsSorted(t *testing.T) {
 		return cmp.Or(cmp.Compare(a.Caller, b.Caller), cmp.Compare(a.Pos, b.Pos), cmp.Compare(a.Callee, b.Callee))
 	}) {
 		t.Error("Calls are not sorted by Caller, then Pos, then Callee")
+	}
+	if !slices.IsSortedFunc(g.Accesses, func(a, b Access) int {
+		return cmp.Or(cmp.Compare(a.Accessor, b.Accessor), cmp.Compare(a.Pos, b.Pos), cmp.Compare(a.Target, b.Target), cmp.Compare(a.Kind, b.Kind))
+	}) {
+		t.Error("Accesses are not sorted by Accessor, then Pos, then Target, then Kind")
 	}
 }
 
@@ -645,6 +806,10 @@ func formatFunction(f Function) string {
 	}
 	return fmt.Sprintf("{name=%s pkg=%s recv=%s params=%v results=%v exported=%v pos=%s owner=%s}",
 		f.Name, f.Package, recv, f.Params, f.Results, f.Exported, f.Pos, f.Owner)
+}
+
+func formatAccess(a Access) string {
+	return fmt.Sprintf("%s %s %s at %s", a.Accessor, a.Kind, a.Target, a.Pos)
 }
 
 func formatCall(c FunctionCall) string {

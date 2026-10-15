@@ -109,12 +109,30 @@ const (
 	DynamicCall   CallKind = "dynamic"
 )
 
+// Access is one write to a package-level var or a struct field.
+type Access struct {
+	Accessor string     `json:"accessor"` // function ID, or the package for package-level values
+	Target   string     `json:"target"`   // VarID or FieldID, in the repo or not
+	Pos      string     `json:"pos"`
+	Kind     AccessKind `json:"kind"`
+}
+
+type AccessKind string
+
+const (
+	AssignAccess    AccessKind = "assign"    // x = v
+	UpdateAccess    AccessKind = "update"    // x++, x += v, x = f(x)
+	ContentAccess   AccessKind = "content"   // x[k] = v, delete(x, k); or a struct value on a written path
+	ConstructAccess AccessKind = "construct" // T{f: v}, or a package var's initial value
+)
+
 // CallGraph holds the repo's functions and the calls made inside them.
 type CallGraph struct {
 	Types     []Type         `json:"types"`
 	Variables []Variable     `json:"variables"`
 	Functions []Function     `json:"functions"`
 	Calls     []FunctionCall `json:"calls"`
+	Accesses  []Access       `json:"accesses"`
 
 	Implementations []Implementation `json:"implementations"`
 
@@ -143,6 +161,7 @@ func BuildCallGraph(res *load.Result) *CallGraph {
 		variables: []Variable{},
 		functions: []Function{},
 		calls:     []FunctionCall{},
+		accesses:  []Access{},
 
 		implementations: []Implementation{},
 	}
@@ -181,11 +200,20 @@ func BuildCallGraph(res *load.Result) *CallGraph {
 			cmp.Compare(x.Callee, y.Callee),
 		)
 	})
+	slices.SortFunc(b.accesses, func(x, y Access) int {
+		return cmp.Or(
+			cmp.Compare(x.Accessor, y.Accessor),
+			cmp.Compare(x.Pos, y.Pos),
+			cmp.Compare(x.Target, y.Target),
+			cmp.Compare(x.Kind, y.Kind),
+		)
+	})
 	return &CallGraph{
 		Types:           b.types,
 		Variables:       b.variables,
 		Functions:       b.functions,
 		Calls:           b.calls,
+		Accesses:        b.accesses,
 		Implementations: b.implementations,
 		ids:             b.ids,
 	}
@@ -204,6 +232,7 @@ type callGraphBuilder struct {
 	variables []Variable
 	functions []Function
 	calls     []FunctionCall
+	accesses  []Access
 
 	// Kept during the walk for computing implementations afterwards.
 	concrete   []*types.TypeName
@@ -239,8 +268,8 @@ func (b *callGraphBuilder) assignFuncDeclID(funcDecl *ast.FuncDecl, fn *types.Fu
 	return fmt.Sprintf("%s@%s#%d", fn.FullName(), file, b.inits[file])
 }
 
-// walkBody records the calls and local types under root (a function body, or
-// a package-level value), with callerID as their caller or parent.
+// walkBody records the calls, writes and local types under root (a function
+// body, or a package-level value), with callerID as their caller or parent.
 func (b *callGraphBuilder) walkBody(callerID string, root ast.Node) {
 	ast.Inspect(root, func(n ast.Node) bool {
 		switch n := n.(type) {
@@ -252,7 +281,19 @@ func (b *callGraphBuilder) walkBody(callerID string, root ast.Node) {
 					b.handleTypeSpec(spec)
 				}
 			}
+		case *ast.AssignStmt:
+			b.addAssign(callerID, n)
+		case *ast.IncDecStmt:
+			b.addWrite(callerID, n.X, UpdateAccess)
+		case *ast.RangeStmt:
+			if n.Tok == token.ASSIGN { // for x = range: := declares locals instead
+				b.addWrite(callerID, n.Key, AssignAccess)
+				b.addWrite(callerID, n.Value, AssignAccess)
+			}
+		case *ast.CompositeLit:
+			b.addConstruct(callerID, n)
 		case *ast.CallExpr:
+			b.addBuiltinWrite(callerID, n)
 			b.addCall(callerID, n)
 		}
 		return true // closures, arguments and declarations can contain more
@@ -385,6 +426,8 @@ func (b *callGraphBuilder) handleValueSpec(spec *ast.ValueSpec) {
 		}
 		if cnst, ok := obj.(*types.Const); ok {
 			node.Const, node.Value = true, cnst.Val().ExactString()
+		} else if len(spec.Values) > 0 {
+			b.accesses = append(b.accesses, Access{Accessor: b.pkg.PkgPath, Target: node.ID, Pos: b.pos(name.Pos()), Kind: ConstructAccess}) // its initial value
 		}
 		b.variables = append(b.variables, node)
 	}
