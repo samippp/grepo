@@ -298,6 +298,13 @@ func TestCallGraphFunctions(t *testing.T) {
 			Pos:      "store/writes.go:77",
 			Owner:    tWBox,
 		},
+		{
+			ID: "(*" + tWBox + ").derefs", Name: "derefs", Package: storePkg,
+			Receiver: &Param{Name: "b", Type: "*" + tWBox},
+			Pos:      "store/writes.go:83",
+			Owner:    tWBox,
+		},
+		{ID: storePkg + ".promoted", Name: "promoted", Package: storePkg, Pos: "store/writes.go:93"},
 	}
 
 	got := make(map[string]Function)
@@ -459,6 +466,11 @@ func TestCallGraphTypes(t *testing.T) {
 				{ID: tWBox + ".Tags", Name: "Tags", Type: "[]" + tTagged, Pos: "store/writes.go:22"},
 			},
 		},
+		{
+			ID: storePkg + ".Wrapped", Name: "Wrapped", Package: storePkg, Kind: StructType, Exported: true,
+			Pos:    "store/writes.go:89",
+			Fields: []Field{{ID: storePkg + ".Wrapped.Inner", Name: "Inner", Type: "*" + tWInner, Embedded: true, Pos: "store/writes.go:89"}},
+		},
 	}
 
 	got := make(map[string]Type)
@@ -550,6 +562,7 @@ func TestCallGraphVariables(t *testing.T) {
 		// No node for save's local var count.
 		{ID: storePkg + ".Counter", Name: "Counter", Package: storePkg, Type: "int", Exported: true, Pos: "store/writes.go:25"},
 		{ID: storePkg + ".defaultBox", Name: "defaultBox", Package: storePkg, Type: tWBox, Pos: "store/writes.go:28"},
+		{ID: storePkg + ".wrapped", Name: "wrapped", Package: storePkg, Type: storePkg + ".Wrapped", Pos: "store/writes.go:91"},
 	}
 
 	got := make(map[string]Variable)
@@ -693,8 +706,10 @@ func TestCallGraphAccesses(t *testing.T) {
 		// b.Inner.X = 1: Inner is a struct value, so Box's memory changes too.
 		w(idWrites, tWInner+".X", at("44"), AssignAccess),
 		w(idWrites, tWBox+".Inner", at("44"), ContentAccess),
-		// b.Ptr.X = 1: past a pointer, Ptr itself is unchanged.
+		// b.Ptr.X = 1: Ptr still holds the same address, but what it points to changed,
+		// as with a slice or map. The walk stops there.
 		w(idWrites, tWInner+".X", at("45"), AssignAccess),
+		w(idWrites, tWBox+".Ptr", at("45"), ContentAccess),
 		w(idWrites, tWBox+".Ptr", at("46"), ContentAccess), // *b.Ptr = Inner{}
 		// b.Tags[0].Name = "t": Name is promoted from the embedded User value; the index
 		// into Tags writes its contents and stops the path.
@@ -718,13 +733,22 @@ func TestCallGraphAccesses(t *testing.T) {
 		w(storePkg+".points", tWInner+".X", at("66"), ConstructAccess),
 		w(storePkg+".points", tWInner+".X", at("67"), ConstructAccess),
 
-		// Outside targets are kept. DefaultClient is a pointer: no edge for the var itself.
+		// Outside targets are kept. DefaultClient is a pointer: content on the var.
 		w(storePkg+".outside", "os.Args", at("72"), AssignAccess),
 		w(storePkg+".outside", "net/http.Client.Timeout", at("73"), AssignAccess),
+		w(storePkg+".outside", "net/http.DefaultClient", at("73"), ContentAccess),
 		w(storePkg+".outside", "net/http.Server.Addr", at("74"), ConstructAccess),
 
 		// for b.N = range xs: assigned each iteration.
 		w("(*"+tWBox+").ranges", tWBox+".N", at("78"), AssignAccess),
+
+		// (*b.Ptr).X = 1: the same edges as b.Ptr.X = 1.
+		w("(*"+tWBox+").derefs", tWInner+".X", at("84"), AssignAccess),
+		w("(*"+tWBox+").derefs", tWBox+".Ptr", at("84"), ContentAccess),
+		// wrapped.X = 1 through the embedded *Inner: content on the field holding the
+		// pointer, then stop, so nothing on wrapped.
+		w(storePkg+".promoted", tWInner+".X", at("94"), AssignAccess),
+		w(storePkg+".promoted", storePkg+".Wrapped.Inner", at("94"), ContentAccess),
 	}
 
 	// Counted, so a duplicated edge shows up as unexpected.
