@@ -93,6 +93,7 @@ type FunctionCall struct {
 	Pos      string   `json:"pos"`
 	CallKind CallKind `json:"callKind"`
 	Args     []Arg    `json:"args"`
+	Through  string   `json:"through,omitempty"` // field or package var the call is made on or takes its func from
 }
 
 // Arg is one argument at a call site.
@@ -109,7 +110,7 @@ const (
 	DynamicCall   CallKind = "dynamic"
 )
 
-// Access is one write to a package-level var or a struct field.
+// Access is one write, read or escape of a package-level var or a struct field.
 type Access struct {
 	Accessor string     `json:"accessor"` // function ID, or the package for package-level values
 	Target   string     `json:"target"`   // VarID or FieldID, in the repo or not
@@ -124,6 +125,8 @@ const (
 	UpdateAccess    AccessKind = "update"    // x++, x += v, x = f(x)
 	ContentAccess   AccessKind = "content"   // x[k] = v, delete(x, k); or a struct value on a written path
 	ConstructAccess AccessKind = "construct" // T{f: v}, or a package var's initial value
+	ReadAccess      AccessKind = "read"      // the value is loaded: y := x, x.f, x[k]
+	EscapeAccess    AccessKind = "escape"    // access is handed out: &x, a pointer method on x, a slice or map passed on
 )
 
 // CallGraph holds the repo's functions and the calls made inside them.

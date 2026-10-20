@@ -78,15 +78,17 @@ Callee    a function ID; "" for dynamic calls
 Pos       "file:line" of the call site (start of the call expression)
 CallKind  static | interface | dynamic
 Args      []{Expr as written, Type}
+Through   the field or package var the call is made on (s.buf.WriteString) or takes
+          its func from (s.onError(err)); "" for locals, params, results   (M1e, planned)
 ```
 
-**`Access`**: one per write site.
+**`Access`**: one per write, read or escape site.
 
 ```
 Accessor  a function ID, or a package path for package-level values
 Target    a VarID or FieldID, in the repo or not
 Pos       "file:line" of the write
-Kind      assign | update | content | construct   (read: later)
+Kind      assign | update | content | construct | read | escape   (read, escape: M1e, planned)
 ```
 
 **`Implementation`**: a concrete repo type satisfies a repo interface.
@@ -199,7 +201,7 @@ BuildCallGraph
 
 ### Writes (Access)
 - Purpose: who changes which state. Field roles for the MCP (config vs. live state vs. dead), ranking important vars and fields, data flow through shared state, side effects.
-- Writes first; reads later as another kind on the same edge, so `Access` is one list with kinds, like `Calls` with `CallKind`.
+- Writes first; reads and escapes later as more kinds on the same edge (M1e), so `Access` is one list with kinds, like `Calls` with `CallKind`.
 - Kinds are recorded because only the walker sees the syntax; later consumers would have to re-parse.
   - `assign`: `x = v`, `s.f = v`, one edge per left-hand item.
   - `update`: `x++`, `x += v`, or an `=` whose right side reads the same expression (`s.items = append(s.items, v)`). Same expression, not same ID: `b.N = o.N + 1` is an assign.
@@ -211,6 +213,32 @@ BuildCallGraph
 - Outside targets are kept (`os.Args`, `net/http.Server.Addr`), like outside callees.
 - One edge per site, with `Pos`; aggregate later if needed.
 - Not writes: taking an address (`&x`, pointer-method calls like `s.mu.Lock()`) and passing slices or maps to functions (`slices.Sort(s.items)`). The write happens elsewhere, or never: see open items.
+
+### Reads and escapes (M1e, planned)
+- Purpose: `impact` (who depends on a field), dead-field detection, and mutability claims that never say "unchanged" when it might be.
+- Two kinds, no subkinds. `read`: the value was loaded here. `escape`: access was handed out here, so a change can happen elsewhere. "Who uses X" is `read` ∪ `escape`; writes are separate.
+- One edge per site, like writes and calls: `f(s.x, s.x)` is two edges. `Pos` is the start of the expression.
+- Reads: plain uses, `range`, indexing (`s.items[i]` reads `Store.items`), `len` / `cap` args, `copy`'s source.
+- Every hop of a selector is a read, pointers included: `s.ptr.x` reads `T.x` and `Store.ptr`. Embedded hops count: `s.x` via `Base` reads `Base.x` and `Store.Base`.
+- No read where the written path gets a write edge: `s.inner.x = 1` is writes only. Other hops on the path and index expressions are reads: `s.sub.ptr.x = 1` reads `Store.sub`; `s.m[s.key] = v` reads `Store.key`.
+- An `update` suppresses the read of its matching right-side expression: `x += 1`, `x = x + 1` and `s.items = append(s.items, v)` are `update` only; other right-side reads stay.
+- Escapes of a field's own storage (no read): `&s.f`; a method call where Go takes the address (pointer receiver on a non-pointer, non-interface field or var: `s.buf.WriteString(x)`, `s.mu.Lock()`); a method value in that case (`f := s.buf.WriteString`). Struct-value hops before the target get no read, up to the first pointer: `&s.a.b` reads nothing; `&s.p.b` reads `Store.p`.
+- Escapes of contents (plus the read): a slice or map field or var passed to a function, stored (`m := s.users`, `o.x = s.items`, `T{items: s.items}`), returned, or sent. Only when the expression is the field itself (not `s.items[1:]`); builtins and conversions excluded. Pointers excluded on purpose: "the contents of `db` may change" is true of every pointer field and tells users nothing.
+- Other method calls through a field are reads: pointer field (`s.db.Query`), value receiver (`s.cfg.Addr`), interface (`s.h.ServeHTTP`), func field (`s.onError(err)`).
+- Consts: repo consts are read; outside consts (`time.Second`, `http.StatusOK`) get no edge: they can't change and no consumer needs them. Outside fields and vars are kept (`r.Header`, `os.Args`), like writes; human output hides them by default.
+- Package-level values, and consts in type declarations (`type T [Max]byte`), have the package as accessor. Generic fields use `Origin()`, like writes.
+- Don't guess what callees do: whether a method changes its receiver isn't decidable at the site (outside bodies are dropped, interfaces have many implementations), so the site records facts and a later analysis may summarize methods (needs the root of each write).
+
+### Through (M1e, planned)
+- On `FunctionCall`, not `Access`: it links a call to the stored value it goes through, for flows (M7) and for "which methods are called on this field".
+- Set when the call's `X` in `X.M()` or `X()` is a field or package var; promoted methods use the embedded field (`l.Lock()` via `sync.Mutex` → `Locked.Mutex`). Locals, params, results and package names: "".
+- The mode (value, pointer, address, interface, func) isn't stored: it follows from `CallKind`, the target's type and the callee's receiver (`(*T).M`). The walker computes it to choose read or escape.
+
+### Walker structure (M1e, planned)
+- Recursive descent instead of one `ast.Inspect`: `walk` (statements), `expr` (an expression evaluated as a value), `children` (everything that doesn't change context).
+- Context is explicit: a subexpression is a read only if it reaches `expr`. Write handlers (`addWrite`) hand what they don't write (index expressions, the path past a pointer) to `expr`; `&`, receivers and an update's matching expression don't go to `expr`.
+- Chosen over mark-and-skip (handlers mark nodes, a later visit skips them): context stays in one place, and a forgotten case gives a missing read instead of a spurious one.
+- First as a behavior-preserving refactor: existing tests and the `vta-diff` report unchanged, before any reads.
 
 ### Variables
 - Package level only: local `var` / `const` get no node (an LLM reads function bodies from source).
@@ -241,7 +269,9 @@ BuildCallGraph
 | #8: type arguments on generic calls | deferred to M7 |
 | #13: closure nodes | open; likely with M7 |
 | #14: implementations of outside interfaces | open |
-| Escapes: `&x`, pointer-method calls, slices / maps passed to functions | not writes; a separate edge later ("address escapes here"), linked to the call |
-| Aliasing through locals | `m := s.users; m[k] = v` writes into `Store.users` but gets no edge |
+| Escapes | M1e: `escape` kind on `Access` (see Reads and escapes) |
+| Aliasing through locals | `m := s.users; m[k] = v` writes into `Store.users` but gets no `content` edge; M1e records the `escape` at `m := s.users` |
+| Pointer contents | `s.db.Close()`, `f(s.db)` may change what `db` points to; no edge by design (only direct writes like `s.db.x = 1` give `content`) |
+| Method summaries | whether a method changes its receiver, transitively; deferred, needs the root of each write on `Access` |
 | Type strings of local types | `types.TypeString` prints a local `result` as `pkg.result`, so a param or field of a local type doesn't show its `#n` ID |
 | M6: explanation cache | key on a hash of the node's source, not its ID: a stable ID doesn't mean unchanged code |

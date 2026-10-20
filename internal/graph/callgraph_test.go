@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log/slog"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/samippp/grepo/internal/load"
@@ -63,6 +64,18 @@ const (
 	// Writes fixture (store/writes.go).
 	tWInner = storePkg + ".Inner"
 	tWBox   = storePkg + ".Box"
+
+	// Reads fixture (store/reads.go).
+	tRPart   = storePkg + ".Part"
+	tRBase   = storePkg + ".Base"
+	tRSub    = storePkg + ".Sub"
+	tRHolder = storePkg + ".Holder"
+	tRLocked = storePkg + ".Locked"
+	tRBag    = storePkg + ".Bag[T]"
+
+	idValues = "(*" + tRHolder + ").values"
+	idCalls  = "(*" + tRHolder + ").calls"
+	idHands  = "(*" + tRHolder + ").hands"
 )
 
 func buildFixtureCallGraph(t *testing.T) *CallGraph {
@@ -81,6 +94,20 @@ func buildFixtureCallGraph(t *testing.T) *CallGraph {
 
 func TestCallGraphFunctions(t *testing.T) {
 	g := buildFixtureCallGraph(t)
+
+	// Holder's unexported methods and the helpers in store/reads.go.
+	holderMethod := func(name, line string, params, results []Param) Function {
+		return Function{
+			ID: "(*" + tRHolder + ")." + name, Name: name, Package: storePkg,
+			Receiver: &Param{Name: "r", Type: "*" + tRHolder},
+			Params:   params, Results: results,
+			Pos: "store/reads.go:" + line, Owner: tRHolder,
+		}
+	}
+	readsFunc := func(name, line string, params, results []Param) Function {
+		return Function{ID: storePkg + "." + name, Name: name, Package: storePkg, Params: params, Results: results, Pos: "store/reads.go:" + line}
+	}
+	ints := []Param{{Name: "", Type: "int"}}
 
 	want := []Function{
 		{
@@ -305,6 +332,36 @@ func TestCallGraphFunctions(t *testing.T) {
 			Owner:    tWBox,
 		},
 		{ID: storePkg + ".promoted", Name: "promoted", Package: storePkg, Pos: "store/writes.go:93"},
+
+		{
+			ID: "(*" + tRPart + ").Bump", Name: "Bump", Package: storePkg,
+			Receiver: &Param{Name: "p", Type: "*" + tRPart},
+			Exported: true, Pos: "store/reads.go:13", Owner: tRPart,
+		},
+		{
+			ID: "(" + tRPart + ").Value", Name: "Value", Package: storePkg,
+			Receiver: &Param{Name: "p", Type: tRPart}, Results: ints,
+			Exported: true, Pos: "store/reads.go:15", Owner: tRPart,
+		},
+		{
+			ID: "(*" + tRHolder + ").Touch", Name: "Touch", Package: storePkg,
+			Receiver: &Param{Name: "r", Type: "*" + tRHolder},
+			Exported: true, Pos: "store/reads.go:36", Owner: tRHolder,
+		},
+		readsFunc("use", "54", []Param{{Name: "n", Type: "int"}}, nil),
+		readsFunc("two", "56", []Param{{Name: "a", Type: "int"}, {Name: "b", Type: "int"}}, nil),
+		readsFunc("sum", "58", []Param{{Name: "xs", Type: "[]int"}}, ints),
+		readsFunc("keep", "60", []Param{{Name: "p", Type: "*" + tRPart}}, nil),
+		holderMethod("values", "62", []Param{{Name: "xs", Type: "[]int"}}, ints),
+		holderMethod("writes", "80", []Param{{Name: "v", Type: "string"}}, nil),
+		holderMethod("addresses", "90", nil, nil),
+		holderMethod("calls", "98", []Param{{Name: "w", Type: "net/http.ResponseWriter"}, {Name: "req", Type: "*net/http.Request"}}, nil),
+		readsFunc("lock", "114", []Param{{Name: "l", Type: "*" + tRLocked}}, nil),
+		holderMethod("outsides", "118", []Param{{Name: "req", Type: "*net/http.Request"}}, ints),
+		holderMethod("hands", "127",
+			[]Param{{Name: "other", Type: "*" + tRHolder}, {Name: "ch", Type: "chan []int"}},
+			[]Param{{Name: "", Type: "map[int]string"}}),
+		readsFunc("bagLen", "139", []Param{{Name: "b", Type: "*" + storePkg + ".Bag[int]"}}, ints),
 	}
 
 	got := make(map[string]Function)
@@ -471,6 +528,54 @@ func TestCallGraphTypes(t *testing.T) {
 			Pos:    "store/writes.go:89",
 			Fields: []Field{{ID: storePkg + ".Wrapped.Inner", Name: "Inner", Type: "*" + tWInner, Embedded: true, Pos: "store/writes.go:89"}},
 		},
+
+		{
+			ID: tRPart, Name: "Part", Package: storePkg, Kind: StructType, Exported: true,
+			Pos:    "store/reads.go:11",
+			Fields: []Field{{ID: tRPart + ".X", Name: "X", Type: "int", Pos: "store/reads.go:11"}},
+		},
+		{
+			ID: tRBase, Name: "Base", Package: storePkg, Kind: StructType, Exported: true,
+			Pos:    "store/reads.go:17",
+			Fields: []Field{{ID: tRBase + ".ID", Name: "ID", Type: "int", Pos: "store/reads.go:17"}},
+		},
+		{
+			ID: tRSub, Name: "Sub", Package: storePkg, Kind: StructType, Exported: true,
+			Pos:    "store/reads.go:19",
+			Fields: []Field{{ID: tRSub + ".Ptr", Name: "Ptr", Type: "*" + tRPart, Pos: "store/reads.go:19"}},
+		},
+		{
+			ID: tRHolder, Name: "Holder", Package: storePkg, Kind: StructType, Exported: true,
+			Pos: "store/reads.go:21",
+			Fields: []Field{
+				{ID: tRHolder + ".Base", Name: "Base", Type: tRBase, Embedded: true, Pos: "store/reads.go:22"},
+				{ID: tRHolder + ".N", Name: "N", Type: "int", Pos: "store/reads.go:23"},
+				{ID: tRHolder + ".Step", Name: "Step", Type: "int", Pos: "store/reads.go:24"},
+				{ID: tRHolder + ".Key", Name: "Key", Type: "int", Pos: "store/reads.go:25"},
+				{ID: tRHolder + ".Items", Name: "Items", Type: "[]int", Pos: "store/reads.go:26"},
+				{ID: tRHolder + ".Users", Name: "Users", Type: "map[int]string", Pos: "store/reads.go:27"},
+				{ID: tRHolder + ".Val", Name: "Val", Type: tRPart, Pos: "store/reads.go:28"},
+				{ID: tRHolder + ".Ptr", Name: "Ptr", Type: "*" + tRPart, Pos: "store/reads.go:29"},
+				{ID: tRHolder + ".Sub", Name: "Sub", Type: tRSub, Pos: "store/reads.go:30"},
+				{ID: tRHolder + ".H", Name: "H", Type: "net/http.Handler", Pos: "store/reads.go:31"},
+				{ID: tRHolder + ".OnErr", Name: "OnErr", Type: "func(error)", Pos: "store/reads.go:32"},
+				{ID: tRHolder + ".mu", Name: "mu", Type: "sync.Mutex", Pos: "store/reads.go:33"},
+			},
+		},
+		{
+			ID: tRLocked, Name: "Locked", Package: storePkg, Kind: StructType, Exported: true,
+			Pos:    "store/reads.go:39",
+			Fields: []Field{{ID: tRLocked + ".Mutex", Name: "Mutex", Type: "sync.Mutex", Embedded: true, Pos: "store/reads.go:39"}},
+		},
+		{
+			ID: tRBag, Name: "Bag", Package: storePkg, Kind: StructType, Exported: true,
+			Pos:    "store/reads.go:41",
+			Fields: []Field{{ID: tRBag + ".items", Name: "items", Type: "[]T", Pos: "store/reads.go:41"}},
+		},
+		{
+			ID: storePkg + ".Slots", Name: "Slots", Package: storePkg, Kind: OtherType, Exported: true,
+			Pos: "store/reads.go:44", Underlying: "[100]byte",
+		},
 	}
 
 	got := make(map[string]Type)
@@ -563,6 +668,10 @@ func TestCallGraphVariables(t *testing.T) {
 		{ID: storePkg + ".Counter", Name: "Counter", Package: storePkg, Type: "int", Exported: true, Pos: "store/writes.go:25"},
 		{ID: storePkg + ".defaultBox", Name: "defaultBox", Package: storePkg, Type: tWBox, Pos: "store/writes.go:28"},
 		{ID: storePkg + ".wrapped", Name: "wrapped", Package: storePkg, Type: storePkg + ".Wrapped", Pos: "store/writes.go:91"},
+		{ID: storePkg + ".limit", Name: "limit", Package: storePkg, Type: "int", Pos: "store/reads.go:46"},
+		{ID: storePkg + ".doubled", Name: "doubled", Package: storePkg, Type: "untyped int", Const: true, Value: "200", Pos: "store/reads.go:48"},
+		{ID: storePkg + ".shared", Name: "shared", Package: storePkg, Type: tRHolder, Pos: "store/reads.go:50"},
+		{ID: storePkg + ".OnReady", Name: "OnReady", Package: storePkg, Type: "func()", Exported: true, Pos: "store/reads.go:52"},
 	}
 
 	got := make(map[string]Variable)
@@ -587,6 +696,8 @@ func TestCallGraphVariables(t *testing.T) {
 
 func TestCallGraphCalls(t *testing.T) {
 	g := buildFixtureCallGraph(t)
+
+	rat := func(line string) string { return "store/reads.go:" + line }
 
 	want := []FunctionCall{
 		// store.New(): function in another package.
@@ -642,6 +753,29 @@ func TestCallGraphCalls(t *testing.T) {
 		{Caller: mainPkg + ".describe", Callee: "(error).Error", Pos: "main.go:78", CallKind: InterfaceCall},
 		// n.Name() through a local interface: the callee has a node now.
 		{Caller: mainPkg + ".announce", Callee: "(" + tLocalNamer + ").Name", Pos: "main.go:101", CallKind: InterfaceCall},
+
+		// The reads fixture's calls (store/reads.go). Their Through is in TestCallGraphThrough.
+		{Caller: idValues, Callee: storePkg + ".use", Pos: rat("64"), CallKind: StaticCall, Args: []Arg{{"r.N", "int"}}},
+		{Caller: idValues, Callee: storePkg + ".two", Pos: rat("75"), CallKind: StaticCall, Args: []Arg{{"r.N", "int"}, {"r.N", "int"}}},
+		// No call for the func literal called on line 76.
+		{Caller: idCalls, Callee: "(*" + tRPart + ").Bump", Pos: rat("99"), CallKind: StaticCall},
+		{Caller: idCalls, Callee: "(*" + tRPart + ").Bump", Pos: rat("100"), CallKind: StaticCall},
+		{Caller: idCalls, Callee: "(" + tRPart + ").Value", Pos: rat("101"), CallKind: StaticCall},
+		{Caller: idCalls, Callee: "(net/http.Handler).ServeHTTP", Pos: rat("102"), CallKind: InterfaceCall,
+			Args: []Arg{{"w", "net/http.ResponseWriter"}, {"req", "*net/http.Request"}}},
+		{Caller: idCalls, Callee: "", Pos: rat("103"), CallKind: DynamicCall, Args: []Arg{{"nil", "untyped nil"}}},
+		{Caller: idCalls, Callee: "(*sync.Mutex).Lock", Pos: rat("104"), CallKind: StaticCall},
+		{Caller: idCalls, Callee: "(*" + tRHolder + ").Touch", Pos: rat("105"), CallKind: StaticCall},
+		{Caller: idCalls, Callee: "(*" + tRHolder + ").Touch", Pos: rat("106"), CallKind: StaticCall},
+		{Caller: idCalls, Callee: "", Pos: rat("107"), CallKind: DynamicCall},
+		{Caller: idCalls, Callee: "", Pos: rat("110"), CallKind: DynamicCall},
+		{Caller: idCalls, Callee: "", Pos: rat("111"), CallKind: DynamicCall},
+		{Caller: storePkg + ".lock", Callee: "(*sync.Mutex).Lock", Pos: rat("115"), CallKind: StaticCall},
+		{Caller: idHands, Callee: storePkg + ".sum", Pos: rat("128"), CallKind: StaticCall, Args: []Arg{{"r.Items", "[]int"}}},
+		{Caller: idHands, Callee: storePkg + ".use", Pos: rat("128"), CallKind: StaticCall, Args: []Arg{{"sum(r.Items)", "int"}}},
+		{Caller: idHands, Callee: storePkg + ".keep", Pos: rat("133"), CallKind: StaticCall, Args: []Arg{{"r.Ptr", "*" + tRPart}}},
+		{Caller: idHands, Callee: storePkg + ".sum", Pos: rat("134"), CallKind: StaticCall, Args: []Arg{{"r.Items[1:]", "[]int"}}},
+		{Caller: idHands, Callee: storePkg + ".use", Pos: rat("134"), CallKind: StaticCall, Args: []Arg{{"sum(r.Items[1:])", "int"}}},
 	}
 
 	got := make(map[string]bool)
@@ -668,6 +802,8 @@ func TestCallGraphAccesses(t *testing.T) {
 		return Access{Accessor: accessor, Target: target, Pos: pos, Kind: kind}
 	}
 	at := func(line string) string { return "store/writes.go:" + line }
+	rat := func(line string) string { return "store/reads.go:" + line }
+	idWritesR := "(*" + tRHolder + ").writes"
 
 	want := []Access{
 		// Existing fixture code. Literals construct their fields; package vars with a value
@@ -749,12 +885,196 @@ func TestCallGraphAccesses(t *testing.T) {
 		// pointer, then stop, so nothing on wrapped.
 		w(storePkg+".promoted", tWInner+".X", at("94"), AssignAccess),
 		w(storePkg+".promoted", storePkg+".Wrapped.Inner", at("94"), ContentAccess),
+
+		// Writes in the reads fixture (store/reads.go).
+		w("(*"+tRPart+").Bump", tRPart+".X", rat("13"), UpdateAccess),
+		w(storePkg, storePkg+".limit", rat("46"), ConstructAccess),
+		w(storePkg, storePkg+".OnReady", rat("52"), ConstructAccess),
+		w(idWritesR, tRPart+".X", rat("81"), AssignAccess),
+		w(idWritesR, tRHolder+".Val", rat("81"), ContentAccess),
+		w(idWritesR, tRPart+".X", rat("82"), AssignAccess),
+		w(idWritesR, tRHolder+".Ptr", rat("82"), ContentAccess),
+		w(idWritesR, tRPart+".X", rat("83"), AssignAccess),
+		w(idWritesR, tRSub+".Ptr", rat("83"), ContentAccess),
+		w(idWritesR, tRHolder+".Users", rat("84"), ContentAccess),
+		w(idWritesR, tRHolder+".N", rat("85"), UpdateAccess),
+		w(idWritesR, tRHolder+".N", rat("86"), UpdateAccess),
+		w(idWritesR, tRHolder+".Items", rat("87"), UpdateAccess),
+		w(idHands, tRHolder+".Items", rat("130"), AssignAccess),
+		w(idHands, tRHolder+".Items", rat("131"), ConstructAccess),
 	}
 
-	// Counted, so a duplicated edge shows up as unexpected.
+	// Counted, so a duplicated edge shows up as unexpected. Reads and escapes
+	// have their own test.
 	got := make(map[string]int)
 	for _, a := range g.Accesses {
-		got[formatAccess(a)]++
+		if a.Kind != ReadAccess && a.Kind != EscapeAccess {
+			got[formatAccess(a)]++
+		}
+	}
+	for _, w := range want {
+		key := formatAccess(w)
+		if got[key] == 0 {
+			t.Errorf("missing access %s", key)
+			continue
+		}
+		got[key]--
+	}
+	for key, n := range got {
+		for range n {
+			t.Errorf("unexpected access %s", key)
+		}
+	}
+}
+
+func TestCallGraphThrough(t *testing.T) {
+	g := buildFixtureCallGraph(t)
+
+	rat := func(line string) string { return "store/reads.go:" + line }
+	type site struct{ caller, callee, pos string }
+
+	// Through: the field or package var a call is made on, or takes its func from.
+	// Calls on locals, params and results have none.
+	want := map[site]string{
+		{idGet, "(*sync.Mutex).Lock", "store/store.go:24"}:   tStore + ".mu",
+		{idGet, "(*sync.Mutex).Unlock", "store/store.go:25"}: tStore + ".mu",
+
+		{idCalls, "(*" + tRPart + ").Bump", rat("99")}:         tRHolder + ".Ptr",   // pointer field
+		{idCalls, "(*" + tRPart + ").Bump", rat("100")}:        tRHolder + ".Val",   // value field, pointer method
+		{idCalls, "(" + tRPart + ").Value", rat("101")}:        tRHolder + ".Val",   // value method
+		{idCalls, "(net/http.Handler).ServeHTTP", rat("102")}:  tRHolder + ".H",     // interface field
+		{idCalls, "", rat("103")}:                              tRHolder + ".OnErr", // the func stored in OnErr
+		{idCalls, "(*sync.Mutex).Lock", rat("104")}:            tRHolder + ".mu",
+		{idCalls, "(*" + tRHolder + ").Touch", rat("106")}:     storePkg + ".shared",  // a package var
+		{idCalls, "", rat("107")}:                              storePkg + ".OnReady", // a package var holding a func
+		{storePkg + ".lock", "(*sync.Mutex).Lock", rat("115")}: tRLocked + ".Mutex",   // promoted: the embedded field
+		// None for r.Touch() (a param) or f() and g() (method values in locals).
+	}
+
+	got := make(map[site]string)
+	for _, c := range g.Calls {
+		if c.Through != "" {
+			got[site{c.Caller, c.Callee, c.Pos}] = c.Through
+		}
+	}
+	for k, w := range want {
+		if got[k] != w {
+			t.Errorf("call %s -> %q at %s: through = %q, want %q", k.caller, k.callee, k.pos, got[k], w)
+		}
+		delete(got, k)
+	}
+	for k, v := range got {
+		t.Errorf("unexpected through %q on call %s -> %q at %s", v, k.caller, k.callee, k.pos)
+	}
+}
+
+// Reads and escapes, checked exactly for store/reads.go only: every other
+// fixture file has reads too, and they aren't listed.
+func TestCallGraphReads(t *testing.T) {
+	g := buildFixtureCallGraph(t)
+
+	rat := func(line string) string { return "store/reads.go:" + line }
+	r := func(accessor, target, line string) Access {
+		return Access{Accessor: accessor, Target: target, Pos: rat(line), Kind: ReadAccess}
+	}
+	e := func(accessor, target, line string) Access {
+		return Access{Accessor: accessor, Target: target, Pos: rat(line), Kind: EscapeAccess}
+	}
+	idWritesR := "(*" + tRHolder + ").writes"
+	idAddrs := "(*" + tRHolder + ").addresses"
+	idOutsides := "(*" + tRHolder + ").outsides"
+	maxUsers := storePkg + ".maxUsers"
+
+	want := []Access{
+		// Package-level: the package reads the const, in a type, a var and a const.
+		r(storePkg, maxUsers, "44"),
+		r(storePkg, maxUsers, "46"),
+		r(storePkg, maxUsers, "48"),
+		// p.X++ is an update only; p.X in Value is a read.
+		r("("+tRPart+").Value", tRPart+".X", "15"),
+
+		// values: plain uses, range, index, every hop, embedded hops, builtins.
+		r(idValues, tRHolder+".N", "63"),
+		r(idValues, tRHolder+".N", "64"),
+		r(idValues, tRHolder+".N", "65"),
+		r(idValues, tRHolder+".Items", "67"),
+		r(idValues, tRHolder+".Items", "69"),
+		r(idValues, tRHolder+".Key", "69"),
+		r(idValues, tRPart+".X", "70"),
+		r(idValues, tRHolder+".Val", "70"),
+		r(idValues, tRPart+".X", "71"),
+		r(idValues, tRHolder+".Ptr", "71"), // pointer hops are reads too
+		r(idValues, tRBase+".ID", "72"),
+		r(idValues, tRHolder+".Base", "72"), // r.ID is r.Base.ID
+		r(idValues, tRHolder+".Items", "73"),
+		r(idValues, tRHolder+".Items", "74"), // copy's source
+		r(idValues, tRHolder+".N", "75"),
+		r(idValues, tRHolder+".N", "75"),    // one edge per site: two on this line
+		r(idValues, tRHolder+".Step", "76"), // in a closure: belongs to values
+
+		// writes: no read where the path gets a write edge.
+		// 81, 82: nothing. 83: the write stops at Sub.Ptr, so r.Sub is read.
+		r(idWritesR, tRHolder+".Sub", "83"),
+		r(idWritesR, tRHolder+".Key", "84"), // the index
+		// 85: update only. 86: the matching r.N is suppressed, r.Step isn't.
+		r(idWritesR, tRHolder+".Step", "86"),
+		// 87: update only; append is a builtin, so no escape either.
+
+		// addresses: & is an escape; no reads on struct-value hops up to the first pointer.
+		e(idAddrs, tRHolder+".N", "91"),
+		e(idAddrs, tRPart+".X", "92"), // nothing on Holder.Val
+		e(idAddrs, tRPart+".X", "93"),
+		r(idAddrs, tRHolder+".Ptr", "93"), // the pointer is loaded
+		e(idAddrs, storePkg+".shared", "95"),
+
+		// calls: a read unless Go takes the field's address for a pointer method.
+		r(idCalls, tRHolder+".Ptr", "99"),
+		e(idCalls, tRHolder+".Val", "100"),
+		r(idCalls, tRHolder+".Val", "101"),
+		r(idCalls, tRHolder+".H", "102"),
+		r(idCalls, tRHolder+".OnErr", "103"),
+		e(idCalls, tRHolder+".mu", "104"),
+		// 105: r is a param, nothing.
+		e(idCalls, storePkg+".shared", "106"),
+		r(idCalls, storePkg+".OnReady", "107"),
+		e(idCalls, tRHolder+".Val", "108"), // method value, address case
+		r(idCalls, tRHolder+".Ptr", "109"),
+		e(storePkg+".lock", tRLocked+".Mutex", "115"), // promoted through the embedded Mutex
+
+		// outsides: repo consts are read; outside consts get nothing; outside vars and fields are kept.
+		r(idOutsides, maxUsers, "119"),
+		// 120: http.StatusOK, nothing.
+		r(idOutsides, "os.Args", "121"),
+		r(idOutsides, "net/http.Request.Method", "122"),
+		r(idOutsides, "net/url.URL.Path", "122"),
+		r(idOutsides, "net/http.Request.URL", "122"),
+		// 123-124: a local const, nothing.
+
+		// hands: a slice or map field passed, stored, sent or returned is read and escapes.
+		r(idHands, tRHolder+".Items", "128"),
+		e(idHands, tRHolder+".Items", "128"),
+		r(idHands, tRHolder+".Users", "129"),
+		e(idHands, tRHolder+".Users", "129"),
+		r(idHands, tRHolder+".Items", "130"),
+		e(idHands, tRHolder+".Items", "130"),
+		r(idHands, tRHolder+".Items", "131"), // into a literal
+		e(idHands, tRHolder+".Items", "131"),
+		r(idHands, tRHolder+".Items", "132"),
+		e(idHands, tRHolder+".Items", "132"),
+		r(idHands, tRHolder+".Ptr", "133"),   // pointers don't escape
+		r(idHands, tRHolder+".Items", "134"), // r.Items[1:] isn't the field itself
+		r(idHands, tRHolder+".Users", "136"),
+		e(idHands, tRHolder+".Users", "136"),
+
+		// The generic field, like writes.
+		r(storePkg+".bagLen", tRBag+".items", "139"),
+	}
+
+	got := make(map[string]int)
+	for _, a := range g.Accesses {
+		if (a.Kind == ReadAccess || a.Kind == EscapeAccess) && strings.HasPrefix(a.Pos, "store/reads.go:") {
+			got[formatAccess(a)]++
+		}
 	}
 	for _, w := range want {
 		key := formatAccess(w)
