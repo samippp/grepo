@@ -61,7 +61,7 @@ internal/graph/    builds graphs from loaded packages
   - **M1b:** interface calls resolved to their implementations ✅
   - **M1c:** check the call graph against x/tools' VTA (`grepo vta-diff`) ✅
   - **M1d:** writes to package vars and struct fields ✅
-  - **M1e:** reads and escapes of package vars and struct fields, plus `Through` on calls, for `impact`, dead-field detection and safer mutability claims 🚧 (fixtures in `store/reads.go`)
+  - **M1e:** reads and escapes of package vars and struct fields, plus `Through` on calls, for `impact`, dead-field detection and safer mutability claims ✅
 - **M2: store + query layer** (modeled on gopls' cache)
   - **M2a: incremental store**
     - metadata-only first load (`go list`, no type-checking): package graph right away

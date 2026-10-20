@@ -159,6 +159,8 @@ func BuildCallGraph(res *load.Result) *CallGraph {
 		inits:      map[string]int{},
 		ids:        idTable{},
 		localCount: map[string]int{},
+		repo:       map[string]bool{},
+		suppressed: map[ast.Expr]bool{},
 
 		types:     []Type{},
 		variables: []Variable{},
@@ -169,6 +171,9 @@ func BuildCallGraph(res *load.Result) *CallGraph {
 		implementations: []Implementation{},
 	}
 
+	for _, pkg := range res.Packages {
+		b.repo[pkg.PkgPath] = true
+	}
 	for _, pkg := range res.Packages {
 		b.pkg = pkg
 		for _, syntaxTree := range pkg.Syntax {
@@ -227,9 +232,11 @@ type callGraphBuilder struct {
 	root string            // repo root
 	pkg  *packages.Package // current package
 
-	inits      map[string]int // init funcs seen per file, for unique init IDs
-	ids        idTable        // local type IDs, filled during the walk
-	localCount map[string]int // local types seen per "parent.name", for unique IDs
+	inits      map[string]int    // init funcs seen per file, for unique init IDs
+	ids        idTable           // local type IDs, filled during the walk
+	localCount map[string]int    // local types seen per "parent.name", for unique IDs
+	repo       map[string]bool   // the repo's package paths: their consts are read
+	suppressed map[ast.Expr]bool // update right sides walk won't read: x = x + 1
 
 	types     []Type
 	variables []Variable
@@ -256,7 +263,7 @@ func (b *callGraphBuilder) handleFuncDecl(funcDecl *ast.FuncDecl) {
 
 	// A nil *BlockStmt passed as ast.Node isn't == nil, so check here.
 	if funcDecl.Body != nil {
-		b.walkBody(id, funcDecl.Body)
+		b.walk(id, funcDecl.Body)
 	}
 }
 
@@ -271,38 +278,6 @@ func (b *callGraphBuilder) assignFuncDeclID(funcDecl *ast.FuncDecl, fn *types.Fu
 	return fmt.Sprintf("%s@%s#%d", fn.FullName(), file, b.inits[file])
 }
 
-// walkBody records the calls, writes and local types under root (a function
-// body, or a package-level value), with callerID as their caller or parent.
-func (b *callGraphBuilder) walkBody(callerID string, root ast.Node) {
-	ast.Inspect(root, func(n ast.Node) bool {
-		switch n := n.(type) {
-		case *ast.GenDecl:
-			if n.Tok == token.TYPE {
-				for _, spec := range n.Specs {
-					spec := spec.(*ast.TypeSpec) // TYPE decls only hold TypeSpecs
-					b.assignLocalTypeID(callerID, spec)
-					b.handleTypeSpec(spec)
-				}
-			}
-		case *ast.AssignStmt:
-			b.addAssign(callerID, n)
-		case *ast.IncDecStmt:
-			b.addWrite(callerID, n.X, UpdateAccess)
-		case *ast.RangeStmt:
-			if n.Tok == token.ASSIGN { // for x = range: := declares locals instead
-				b.addWrite(callerID, n.Key, AssignAccess)
-				b.addWrite(callerID, n.Value, AssignAccess)
-			}
-		case *ast.CompositeLit:
-			b.addConstruct(callerID, n)
-		case *ast.CallExpr:
-			b.addBuiltinWrite(callerID, n)
-			b.addCall(callerID, n)
-		}
-		return true // closures, arguments and declarations can contain more
-	})
-}
-
 // addCall records one call made by callerID.
 func (b *callGraphBuilder) addCall(callerID string, call *ast.CallExpr) {
 	callee, isCall := b.callee(call)
@@ -314,6 +289,7 @@ func (b *callGraphBuilder) addCall(callerID string, call *ast.CallExpr) {
 		Pos:      b.pos(call.Pos()),
 		CallKind: callKind(callee),
 		Args:     b.args(call.Args),
+		Through:  b.through(call.Fun),
 	}
 	if callee != nil {
 		edge.Callee = b.ids.funcID(callee)
@@ -398,7 +374,9 @@ func (b *callGraphBuilder) handleGenDecl(genDecl *ast.GenDecl) {
 	switch genDecl.Tok {
 	case token.TYPE:
 		for _, spec := range genDecl.Specs {
-			b.handleTypeSpec(spec.(*ast.TypeSpec)) // TYPE decls only hold TypeSpecs
+			spec := spec.(*ast.TypeSpec) // TYPE decls only hold TypeSpecs
+			b.handleTypeSpec(spec)
+			b.expr(b.pkg.PkgPath, spec.Type) // consts in it: type T [Max]byte
 		}
 	case token.VAR, token.CONST:
 		for _, spec := range genDecl.Specs {
@@ -408,8 +386,8 @@ func (b *callGraphBuilder) handleGenDecl(genDecl *ast.GenDecl) {
 	// token.IMPORT: nothing to record.
 }
 
-// handleValueSpec records each var or const in spec, plus the calls in its
-// values, which run at package startup so their caller is the package (#7).
+// handleValueSpec records each var or const in spec, plus the calls and
+// accesses in its values, which run at package startup so their caller is the package (#7).
 func (b *callGraphBuilder) handleValueSpec(spec *ast.ValueSpec) {
 	for _, name := range spec.Names {
 		if name.Name == "_" {
@@ -437,7 +415,7 @@ func (b *callGraphBuilder) handleValueSpec(spec *ast.ValueSpec) {
 
 	// Only the values: walking the whole spec would also visit its type expression.
 	for _, value := range spec.Values {
-		b.walkBody(b.pkg.PkgPath, value)
+		b.handed(b.pkg.PkgPath, value)
 	}
 }
 

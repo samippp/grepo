@@ -1,4 +1,5 @@
 // Writes: the Access edges. See docs/architecture.md for the rules.
+// Each handler records its writes and hands what it doesn't write to expr.
 
 package graph
 
@@ -8,56 +9,60 @@ import (
 	"go/types"
 )
 
-// addAssign records each target of an = or op= assignment. := only declares
-// locals, so it writes nothing.
+// addAssign records each target of an = or op= assignment, then walks the
+// right side. := only declares locals, so it writes nothing.
 func (b *callGraphBuilder) addAssign(accessor string, assign *ast.AssignStmt) {
-	if assign.Tok == token.DEFINE {
-		return
+	if assign.Tok != token.DEFINE {
+		for i, lhs := range assign.Lhs {
+			kind, match := b.assignKind(assign, i)
+			if match != nil {
+				b.suppressed[match] = true // update only: no read of the matching expression
+			}
+			b.addWrite(accessor, lhs, kind)
+		}
 	}
-	for i, lhs := range assign.Lhs {
-		b.addWrite(accessor, lhs, b.assignKind(assign, i))
+	for _, rhs := range assign.Rhs {
+		b.handed(accessor, rhs)
 	}
 }
 
-// assignKind is how assign changes its i-th target: x += v and x = f(x) update it.
-func (b *callGraphBuilder) assignKind(assign *ast.AssignStmt, i int) AccessKind {
+// assignKind is how assign changes its i-th target: x += v and x = f(x) update
+// it. match is the right-side expression that makes it an update, if any.
+func (b *callGraphBuilder) assignKind(assign *ast.AssignStmt, i int) (kind AccessKind, match ast.Expr) {
 	if assign.Tok != token.ASSIGN {
-		return UpdateAccess
+		return UpdateAccess, nil
 	}
 	rhs := assign.Rhs[0] // a, b = f(): one value for all
 	if len(assign.Rhs) == len(assign.Lhs) {
 		rhs = assign.Rhs[i]
 	}
-	if b.mentions(rhs, assign.Lhs[i]) {
-		return UpdateAccess
+	if m := b.matching(rhs, assign.Lhs[i]); m != nil {
+		return UpdateAccess, m
 	}
-	return AssignAccess
+	return AssignAccess, nil
 }
 
 // addBuiltinWrite records the write delete, clear and copy make into their
-// first argument.
-func (b *callGraphBuilder) addBuiltinWrite(accessor string, call *ast.CallExpr) {
+// first argument, and reports whether it did.
+func (b *callGraphBuilder) addBuiltinWrite(accessor string, call *ast.CallExpr) bool {
 	name, ok := ast.Unparen(call.Fun).(*ast.Ident)
 	if !ok || len(call.Args) == 0 {
-		return
+		return false
 	}
 	if builtin, ok := b.pkg.TypesInfo.Uses[name].(*types.Builtin); ok {
 		switch builtin.Name() {
 		case "delete", "clear", "copy":
 			b.addContentWrite(accessor, call.Args[0], call.Pos())
+			return true
 		}
 	}
+	return false
 }
 
 // addConstruct records each field a struct literal sets: T{f: v}, T{v1, v2}.
 func (b *callGraphBuilder) addConstruct(accessor string, lit *ast.CompositeLit) {
-	typ := b.pkg.TypesInfo.TypeOf(lit)
-	if p, ok := typ.(*types.Pointer); ok {
-		typ = p.Elem() // an elided &T{...}
-	}
-	named, _ := types.Unalias(typ).(*types.Named)
-	st, ok := typ.Underlying().(*types.Struct)
-	if !ok || named == nil {
+	named, st := b.literalStruct(lit)
+	if st == nil || named == nil {
 		return // not a struct, or an unnamed struct type: no field IDs
 	}
 	owner := b.ids.typeID(named.Origin().Obj()) // List[int]{...} → List[T]
@@ -74,6 +79,21 @@ func (b *callGraphBuilder) addConstruct(accessor string, lit *ast.CompositeLit) 
 	}
 }
 
+// literalStruct is the struct type lit builds, and its named type if it has one.
+// st is nil for other literals.
+func (b *callGraphBuilder) literalStruct(lit *ast.CompositeLit) (named *types.Named, st *types.Struct) {
+	typ := b.pkg.TypesInfo.TypeOf(lit)
+	if typ == nil {
+		return nil, nil
+	}
+	if p, ok := typ.(*types.Pointer); ok {
+		typ = p.Elem() // an elided &T{...}
+	}
+	named, _ = types.Unalias(typ).(*types.Named)
+	st, _ = typ.Underlying().(*types.Struct)
+	return named, st
+}
+
 // addWrite records a write of kind to e, then content writes outward: to every
 // struct value whose memory holds e (s.inner.x = 1 changes s.inner), and to the
 // field holding the first pointer on the way, where the walk stops.
@@ -84,6 +104,7 @@ func (b *callGraphBuilder) addWrite(accessor string, e ast.Expr, kind AccessKind
 	switch x := ast.Unparen(e).(type) {
 	case *ast.IndexExpr:
 		b.addContentWrite(accessor, x.X, x.Pos()) // the index decides: x[k]++ is content
+		b.expr(accessor, x.Index)
 		return
 	case *ast.StarExpr:
 		b.addContentWrite(accessor, x.X, x.Pos())
@@ -93,7 +114,7 @@ func (b *callGraphBuilder) addWrite(accessor string, e ast.Expr, kind AccessKind
 		if sel == nil || sel.Kind() != types.FieldVal {
 			break // pkg.Var
 		}
-		steps := b.fieldPath(sel)
+		steps, _ := b.fieldPath(sel.Recv(), sel.Index())
 		last := len(steps) - 1
 		pos := b.pos(x.Pos())
 		if id := steps[last].id; id != "" {
@@ -105,7 +126,10 @@ func (b *callGraphBuilder) addWrite(accessor string, e ast.Expr, kind AccessKind
 				b.accesses = append(b.accesses, Access{Accessor: accessor, Target: id, Pos: pos, Kind: ContentAccess})
 			}
 			if steps[i].viaPointer {
-				return // steps[i-1] holds a pointer: what it points to changed, not it
+				// steps[i-1] holds a pointer: what it points to changed, not it.
+				b.addReads(accessor, steps[:i-1], pos)
+				b.expr(accessor, x.X)
+				return
 			}
 		}
 		if steps[0].viaPointer {
@@ -118,6 +142,8 @@ func (b *callGraphBuilder) addWrite(accessor string, e ast.Expr, kind AccessKind
 	// A package var, by name or pkg.Var. Locals have no holder: no edge.
 	if id := b.holderID(e); id != "" {
 		b.accesses = append(b.accesses, Access{Accessor: accessor, Target: id, Pos: b.pos(e.Pos()), Kind: kind})
+	} else {
+		b.expr(accessor, e)
 	}
 }
 
@@ -129,14 +155,63 @@ func (b *callGraphBuilder) addContentWrite(accessor string, e ast.Expr, pos toke
 		b.addWrite(accessor, e, ContentAccess)
 		return
 	}
+	b.addHolderContent(accessor, e, pos)
+}
+
+// addHolderContent records content on the var or field holderID(e) finds; the
+// rest of e (indexes, the path to the holder) goes to expr.
+func (b *callGraphBuilder) addHolderContent(accessor string, e ast.Expr, pos token.Pos) {
+	switch x := ast.Unparen(e).(type) {
+	case *ast.IndexExpr:
+		b.expr(accessor, x.Index)
+		b.addHolderContent(accessor, x.X, pos)
+		return
+	case *ast.SliceExpr:
+		b.expr(accessor, x.Low)
+		b.expr(accessor, x.High)
+		b.expr(accessor, x.Max)
+		b.addHolderContent(accessor, x.X, pos)
+		return
+	case *ast.StarExpr:
+		b.addHolderContent(accessor, x.X, pos)
+		return
+	case *ast.SelectorExpr:
+		sel := b.pkg.TypesInfo.Selections[x]
+		if sel == nil || sel.Kind() != types.FieldVal {
+			break
+		}
+		steps, _ := b.fieldPath(sel.Recv(), sel.Index())
+		last := len(steps) - 1
+		if id := steps[last].id; id != "" {
+			b.accesses = append(b.accesses, Access{Accessor: accessor, Target: id, Pos: b.pos(pos), Kind: ContentAccess})
+		}
+		b.addReads(accessor, steps[:last], b.pos(x.Pos()))
+		b.expr(accessor, x.X)
+		return
+	}
 	if id := b.holderID(e); id != "" {
 		b.accesses = append(b.accesses, Access{Accessor: accessor, Target: id, Pos: b.pos(pos), Kind: ContentAccess})
+	} else {
+		b.expr(accessor, e)
 	}
 }
 
 // holderID is the ID of the var or field e names, looking through
 // indexes and derefs (s.m[a][b] → s.m), or "" for locals and expressions.
 func (b *callGraphBuilder) holderID(e ast.Expr) string {
+	switch x := ast.Unparen(e).(type) {
+	case *ast.IndexExpr:
+		return b.holderID(x.X)
+	case *ast.SliceExpr:
+		return b.holderID(x.X)
+	case *ast.StarExpr:
+		return b.holderID(x.X)
+	}
+	return b.targetID(e)
+}
+
+// targetID is the ID of the package var or field e is, or "" for anything else.
+func (b *callGraphBuilder) targetID(e ast.Expr) string {
 	switch x := ast.Unparen(e).(type) {
 	case *ast.Ident:
 		if v := packageVar(b.pkg.TypesInfo.Uses[x]); v != nil {
@@ -151,28 +226,22 @@ func (b *callGraphBuilder) holderID(e ast.Expr) string {
 			return ""
 		}
 		if sel.Kind() == types.FieldVal {
-			steps := b.fieldPath(sel)
+			steps, _ := b.fieldPath(sel.Recv(), sel.Index())
 			return steps[len(steps)-1].id
 		}
-	case *ast.IndexExpr:
-		return b.holderID(x.X)
-	case *ast.SliceExpr:
-		return b.holderID(x.X)
-	case *ast.StarExpr:
-		return b.holderID(x.X)
 	}
 	return ""
 }
 
-// mentions reports whether rhs contains the expression lhs: the same objects,
-// field by field. Field IDs are per type, so s.n = other.n + 1 doesn't count.
-func (b *callGraphBuilder) mentions(rhs, lhs ast.Expr) bool {
-	found := false
+// matching returns the expression in rhs that is lhs: the same objects, field
+// by field, or nil. Field IDs are per type, so s.n = other.n + 1 doesn't count.
+func (b *callGraphBuilder) matching(rhs, lhs ast.Expr) ast.Expr {
+	var found ast.Expr
 	ast.Inspect(rhs, func(n ast.Node) bool {
-		if e, ok := n.(ast.Expr); ok && b.sameExpr(e, lhs) {
-			found = true
+		if e, ok := n.(ast.Expr); ok && found == nil && b.sameExpr(e, lhs) {
+			found = e
 		}
-		return !found
+		return found == nil
 	})
 	return found
 }
@@ -197,12 +266,12 @@ type fieldStep struct {
 	viaPointer bool   // its struct was reached through a pointer
 }
 
-// fieldPath lists the fields sel goes through, outermost first: t.Name with
-// an embedded User is [Tagged.User, User.Name].
-func (b *callGraphBuilder) fieldPath(sel *types.Selection) []fieldStep {
+// fieldPath lists the fields index goes through from recv, outermost first, and
+// the last one's type: t.Name with an embedded User is [Tagged.User, User.Name].
+func (b *callGraphBuilder) fieldPath(recv types.Type, index []int) ([]fieldStep, types.Type) {
 	var steps []fieldStep
-	typ := sel.Recv()
-	for _, i := range sel.Index() {
+	typ := recv
+	for _, i := range index {
 		step := fieldStep{}
 		if p, ok := typ.Underlying().(*types.Pointer); ok {
 			typ, step.viaPointer = p.Elem(), true
@@ -214,7 +283,7 @@ func (b *callGraphBuilder) fieldPath(sel *types.Selection) []fieldStep {
 		steps = append(steps, step)
 		typ = field.Type()
 	}
-	return steps
+	return steps, typ
 }
 
 // packageVar returns obj if it's a package-level var, in the repo or not.
