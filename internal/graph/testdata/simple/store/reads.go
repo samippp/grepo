@@ -152,3 +152,13 @@ func (o *Outer) nested() {
 	_ = &shared.Val.X
 	_ = &o.In.Ptr.X
 }
+
+// Consts in types are read wherever a type is written: signatures, var types, literals.
+func sized(b [maxUsers]byte) [maxUsers]byte {
+	var c [maxUsers]byte
+	_ = func(d [maxUsers]byte) {}
+	_ = c
+	return [maxUsers]byte{}
+}
+
+var table [maxUsers]int

@@ -374,6 +374,7 @@ func TestCallGraphFunctions(t *testing.T) {
 			[]Param{{Name: "other", Type: "*" + tRHolder}, {Name: "ch", Type: "chan []int"}},
 			[]Param{{Name: "", Type: "map[int]string"}}),
 		readsFunc("bagLen", "139", []Param{{Name: "b", Type: "*" + storePkg + ".Bag[int]"}}, ints),
+		readsFunc("sized", "157", []Param{{Name: "b", Type: "[100]byte"}}, []Param{{Name: "", Type: "[100]byte"}}),
 		{
 			ID: idNested, Name: "nested", Package: storePkg,
 			Receiver: &Param{Name: "o", Type: "*" + tROuter},
@@ -651,6 +652,7 @@ func TestCallGraphVariables(t *testing.T) {
 		{ID: storePkg + ".doubled", Name: "doubled", Package: storePkg, Type: "untyped int", Const: true, Value: "200", Pos: "store/reads.go:48"},
 		{ID: storePkg + ".shared", Name: "shared", Package: storePkg, Type: tRHolder, Pos: "store/reads.go:50"},
 		{ID: storePkg + ".OnReady", Name: "OnReady", Package: storePkg, Type: "func()", Exported: true, Pos: "store/reads.go:52"},
+		{ID: storePkg + ".table", Name: "table", Package: storePkg, Type: "[100]int", Pos: "store/reads.go:164"},
 	}
 
 	checkExact(t, "variable", g.Variables, want, func(v Variable) string { return fmt.Sprintf("%+v", v) })
@@ -1026,6 +1028,15 @@ func TestCallGraphReads(t *testing.T) {
 		e(idNested, tRPart+".X", "153"),
 		r(idNested, tRHolder+".Ptr", "153"), // stops at the pointer: it and the hops before it are read
 		r(idNested, tROuter+".In", "153"),
+
+		// Consts in types: the param and result types, a local var's type, a
+		// closure's signature, a literal's type; a package var's type, by the package.
+		r(storePkg+".sized", maxUsers, "157"),
+		r(storePkg+".sized", maxUsers, "157"),
+		r(storePkg+".sized", maxUsers, "158"),
+		r(storePkg+".sized", maxUsers, "159"),
+		r(storePkg+".sized", maxUsers, "161"),
+		r(storePkg, maxUsers, "164"),
 	}
 
 	var got []Access

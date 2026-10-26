@@ -25,6 +25,7 @@ func (b *callGraphBuilder) walk(id string, n ast.Node) {
 				b.handleTypeSpec(spec)
 				b.expr(id, spec.Type) // consts in it: type T [Max]byte
 			case *ast.ValueSpec:
+				b.expr(id, spec.Type)
 				for _, value := range spec.Values {
 					b.handed(id, value)
 				}
@@ -98,6 +99,7 @@ func (b *callGraphBuilder) expr(id string, e ast.Expr) {
 		return
 	case *ast.CompositeLit:
 		b.addConstruct(id, e)
+		b.expr(id, e.Type) // consts in it: [Max]byte{}
 		_, st := b.literalStruct(e)
 		for _, elt := range e.Elts {
 			if kv, ok := elt.(*ast.KeyValueExpr); ok {
@@ -111,6 +113,7 @@ func (b *callGraphBuilder) expr(id string, e ast.Expr) {
 		}
 		return
 	case *ast.FuncLit:
+		b.expr(id, e.Type)
 		b.walk(id, e.Body) // closures belong to the enclosing function
 		return
 	}

@@ -260,6 +260,7 @@ func (b *callGraphBuilder) handleFuncDecl(funcDecl *ast.FuncDecl) {
 
 	id := b.assignFuncDeclID(funcDecl, fn)
 	b.functions = append(b.functions, b.newFunction(fn, id))
+	b.expr(id, funcDecl.Type) // consts in its signature: func f(b [Max]byte)
 
 	// A nil *BlockStmt passed as ast.Node isn't == nil, so check here.
 	if funcDecl.Body != nil {
@@ -413,7 +414,7 @@ func (b *callGraphBuilder) handleValueSpec(spec *ast.ValueSpec) {
 		b.variables = append(b.variables, node)
 	}
 
-	// Only the values: walking the whole spec would also visit its type expression.
+	b.expr(b.pkg.PkgPath, spec.Type) // consts in it: var t [Max]int
 	for _, value := range spec.Values {
 		b.handed(b.pkg.PkgPath, value)
 	}
