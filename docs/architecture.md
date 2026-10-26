@@ -30,7 +30,7 @@ CallGraph
 ├── Variables       []Variable         nodes
 ├── Functions       []Function         nodes (incl. methods and interface methods)
 ├── Calls           []FunctionCall     edges: caller → callee
-├── Accesses        []Access           edges: function → var / field it writes
+├── Accesses        []Access           edges: function → var / field it writes, reads or escapes
 └── Implementations []Implementation   edges: type → interface
 (+ PackageGraph: package nodes and import edges)
 ```
@@ -87,7 +87,7 @@ Through   the field or package var the call is made on (s.buf.WriteString) or ta
 ```
 Accessor  a function ID, or a package path for package-level values
 Target    a VarID or FieldID, in the repo or not
-Pos       "file:line" of the write
+Pos       "file:line" of the site (start of the expression)
 Kind      assign | update | content | construct | read | escape
 ```
 

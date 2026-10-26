@@ -9,7 +9,7 @@ grepo has two front ends that share one analysis pipeline and query layer:
 
 ## Status
 
-**M1: call graph.** `grepo analyze` takes a GitHub link or local path and outputs JSON: the package import graph, plus types, variables, functions, calls, interface implementations and writes.
+**M1: call graph.** `grepo analyze` takes a GitHub link or local path and outputs JSON: the package import graph, plus types, variables, functions, calls (with `Through`), interface implementations, and writes, reads and escapes of package vars and struct fields.
 
 ## Usage
 
@@ -51,6 +51,7 @@ internal/logging/  slog setup shared by the CLI and (later) the server
 internal/source/   GitHub link or local path → directory on disk
 internal/load/     loads packages via golang.org/x/tools/go/packages
 internal/graph/    builds graphs from loaded packages
+internal/vtadiff/  dev tool: compares the call graph with x/tools' VTA
 ```
 
 ## Roadmap
