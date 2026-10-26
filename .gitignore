@@ -5,7 +5,7 @@
 # analysis output
 *.grepo.json
 
-# frontend (M3)
+# frontend (M5)
 /web/node_modules
 /web/dist
 
