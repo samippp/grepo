@@ -66,7 +66,7 @@ internal/vtadiff/  dev tool: compares the call graph with x/tools' VTA
 - **M2: store + query layer** (modeled on gopls' cache)
   - **M2a: incremental store**
     - metadata-only first load (`go list`, no type-checking): package graph right away
-    - SQLite store, one entry per package, keyed by a hash of its files, its dependencies' keys and the build config
+    - SQLite store, one entry per package, keyed by a hash of its files, its dependencies' keys, the build config and grepo's analysis version (so an upgrade that changes the graph rebuilds old entries)
     - edits rebuild the changed package and its reverse imports; everything else is reused
     - implementations from per-package method sets and interfaces, matched across packages afterwards
     - own loader: `go list` + `go/types`, dependencies type-checked from source without bodies, type summaries cached per package
