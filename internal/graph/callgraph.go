@@ -24,7 +24,8 @@ type Function struct {
 	Results  []Param `json:"results"`
 	Exported bool    `json:"exported"`
 	Pos      string  `json:"pos"`
-	Owner    string  `json:"owner,omitempty"` // methods: ID of the type that declares it
+	Owner    string  `json:"owner,omitempty"`  // methods: ID of the type that declares it
+	Parent   string  `json:"parent,omitempty"` // closures: the enclosing function or closure, or the package var
 }
 
 // Type is a named type declared in the repo.
@@ -94,12 +95,14 @@ type FunctionCall struct {
 	CallKind CallKind `json:"callKind"`
 	Args     []Arg    `json:"args"`
 	Through  string   `json:"through,omitempty"` // field or package var the call is made on or takes its func from
+	Stmt     string   `json:"stmt,omitempty"`    // "go" or "defer" when the call is that statement's
 }
 
 // Arg is one argument at a call site.
 type Arg struct {
-	Expr string `json:"expr"` // as written, e.g. "u.Name"
-	Type string `json:"type"` // e.g. "string"
+	Expr string `json:"expr"`           // as written, e.g. "u.Name"
+	Type string `json:"type"`           // e.g. "string"
+	Func string `json:"func,omitempty"` // the function the argument is: a closure, a declared function, a method value
 }
 
 type CallKind string
@@ -116,6 +119,7 @@ type Access struct {
 	Target   string     `json:"target"`   // VarID or FieldID, in the repo or not
 	Pos      string     `json:"pos"`
 	Kind     AccessKind `json:"kind"`
+	Func     string     `json:"func,omitempty"` // assign / construct: the function the written value is
 }
 
 type AccessKind string
@@ -139,7 +143,8 @@ type CallGraph struct {
 
 	Implementations []Implementation `json:"implementations"`
 
-	ids idTable // local type IDs, for FuncID / TypeID
+	ids      idTable                 // local type IDs, for FuncID / TypeID
+	closures map[*ast.FuncLit]string // closure IDs, for ClosureID
 }
 
 // FuncID is grepo's ID for fn, including methods of this graph's local types.
@@ -150,7 +155,7 @@ func (g *CallGraph) TypeID(tn *types.TypeName) string { return g.ids.typeID(tn) 
 
 // BuildCallGraph records every function and call in res. Rules (see tests):
 //   - IDs from funcID / typeID, types from types.TypeString(t, nil)
-//   - closure calls belong to the enclosing func; built-ins/conversions aren't calls
+//   - closures are nodes owning what's inside them; built-ins/conversions aren't calls
 //   - external calls kept; interface calls point at the interface method
 //   - dynamic calls have no Callee; one edge per call site; output sorted
 func BuildCallGraph(res *load.Result) *CallGraph {
@@ -161,6 +166,11 @@ func BuildCallGraph(res *load.Result) *CallGraph {
 		localCount: map[string]int{},
 		repo:       map[string]bool{},
 		suppressed: map[ast.Expr]bool{},
+		stmt:       map[*ast.CallExpr]string{},
+
+		closures:      map[*ast.FuncLit]string{},
+		closureParent: map[*ast.FuncLit]string{},
+		closureCount:  map[string]int{},
 
 		types:     []Type{},
 		variables: []Variable{},
@@ -224,6 +234,7 @@ func BuildCallGraph(res *load.Result) *CallGraph {
 		Accesses:        b.accesses,
 		Implementations: b.implementations,
 		ids:             b.ids,
+		closures:        b.closures,
 	}
 }
 
@@ -232,11 +243,16 @@ type callGraphBuilder struct {
 	root string            // repo root
 	pkg  *packages.Package // current package
 
-	inits      map[string]int    // init funcs seen per file, for unique init IDs
-	ids        idTable           // local type IDs, filled during the walk
-	localCount map[string]int    // local types seen per "parent.name", for unique IDs
-	repo       map[string]bool   // the repo's package paths: their consts are read
-	suppressed map[ast.Expr]bool // update right sides walk won't read: x = x + 1
+	inits      map[string]int           // init funcs seen per file, for unique init IDs
+	ids        idTable                  // local type IDs, filled during the walk
+	localCount map[string]int           // local types seen per "parent.name", for unique IDs
+	repo       map[string]bool          // the repo's package paths: their consts are read
+	suppressed map[ast.Expr]bool        // update right sides walk won't read: x = x + 1
+	stmt       map[*ast.CallExpr]string // "go" / "defer" for those statements' calls
+
+	closures      map[*ast.FuncLit]string // closure IDs, from numberClosures
+	closureParent map[*ast.FuncLit]string
+	closureCount  map[string]int // closures numbered per ID prefix
 
 	types     []Type
 	variables []Variable
@@ -264,6 +280,7 @@ func (b *callGraphBuilder) handleFuncDecl(funcDecl *ast.FuncDecl) {
 
 	// A nil *BlockStmt passed as ast.Node isn't == nil, so check here.
 	if funcDecl.Body != nil {
+		b.numberClosures(id, id, funcDecl.Body)
 		b.walk(id, funcDecl.Body)
 	}
 }
@@ -281,21 +298,19 @@ func (b *callGraphBuilder) assignFuncDeclID(funcDecl *ast.FuncDecl, fn *types.Fu
 
 // addCall records one call made by callerID.
 func (b *callGraphBuilder) addCall(callerID string, call *ast.CallExpr) {
-	callee, isCall := b.callee(call)
+	callee, kind, isCall := b.callee(call)
 	if !isCall {
 		return
 	}
-	edge := FunctionCall{
+	b.calls = append(b.calls, FunctionCall{
 		Caller:   callerID,
+		Callee:   callee,
 		Pos:      b.pos(call.Pos()),
-		CallKind: callKind(callee),
+		CallKind: kind,
 		Args:     b.args(call.Args),
 		Through:  b.through(call.Fun),
-	}
-	if callee != nil {
-		edge.Callee = b.ids.funcID(callee)
-	}
-	b.calls = append(b.calls, edge)
+		Stmt:     b.stmt[call],
+	})
 }
 
 // assignLocalTypeID gives a type declared inside parentID the ID
@@ -310,12 +325,12 @@ func (b *callGraphBuilder) assignLocalTypeID(parentID string, spec *ast.TypeSpec
 	b.ids[tn] = fmt.Sprintf("%s#%d", key, b.localCount[key])
 }
 
-// callee returns the function call refers to, or nil if unknown (dynamic).
-// isCall is false for conversions, built-ins and inline closures.
-func (b *callGraphBuilder) callee(call *ast.CallExpr) (fn *types.Func, isCall bool) {
+// callee returns the ID of the function call refers to and the call's kind:
+// "" and dynamic if unknown. isCall is false for conversions and built-ins.
+func (b *callGraphBuilder) callee(call *ast.CallExpr) (id string, kind CallKind, isCall bool) {
 	info := b.pkg.TypesInfo
 	if tv := info.Types[call.Fun]; tv.IsType() || tv.IsBuiltin() {
-		return nil, false // int64(n), len(x)
+		return "", "", false // int64(n), len(x)
 	}
 
 	var name *ast.Ident
@@ -325,15 +340,15 @@ func (b *callGraphBuilder) callee(call *ast.CallExpr) (fn *types.Func, isCall bo
 	case *ast.SelectorExpr:
 		name = fun.Sel // pkg.Foo(), obj.Method(), slices.Map[int]()
 	case *ast.FuncLit:
-		return nil, false // func(){...}(): its body is walked anyway
+		return b.closures[fun], StaticCall, true // func(){...}(): called where it's written
 	}
 	// Other shapes (f()()) leave name nil: dynamic.
 
-	fn, _ = info.Uses[name].(*types.Func)
-	if fn != nil {
-		fn = fn.Origin() // List[int].Push → List[T].Push, to match the declared node
+	fn, _ := info.Uses[name].(*types.Func)
+	if fn == nil {
+		return "", DynamicCall, true
 	}
-	return fn, true
+	return b.ids.funcID(fn), callKind(fn), true // funcID: List[int].Push → List[T].Push
 }
 
 // unindex strips type args or an index: first[int] → first, handlers[0] → handlers.
@@ -365,6 +380,7 @@ func (b *callGraphBuilder) args(exprs []ast.Expr) []Arg {
 		args = append(args, Arg{
 			Expr: types.ExprString(arg),
 			Type: types.TypeString(b.pkg.TypesInfo.TypeOf(arg), nil),
+			Func: b.funcValue(arg),
 		})
 	}
 	return args
@@ -390,7 +406,8 @@ func (b *callGraphBuilder) handleGenDecl(genDecl *ast.GenDecl) {
 // handleValueSpec records each var or const in spec, plus the calls and
 // accesses in its values, which run at package startup so their caller is the package (#7).
 func (b *callGraphBuilder) handleValueSpec(spec *ast.ValueSpec) {
-	for _, name := range spec.Names {
+	b.numberValueClosures(spec)
+	for i, name := range spec.Names {
 		if name.Name == "_" {
 			continue // blank: no node, but its value's calls are still recorded below
 		}
@@ -409,7 +426,11 @@ func (b *callGraphBuilder) handleValueSpec(spec *ast.ValueSpec) {
 		if cnst, ok := obj.(*types.Const); ok {
 			node.Const, node.Value = true, cnst.Val().ExactString()
 		} else if len(spec.Values) > 0 {
-			b.accesses = append(b.accesses, Access{Accessor: b.pkg.PkgPath, Target: node.ID, Pos: b.pos(name.Pos()), Kind: ConstructAccess}) // its initial value
+			edge := Access{Accessor: b.pkg.PkgPath, Target: node.ID, Pos: b.pos(name.Pos()), Kind: ConstructAccess} // its initial value
+			if len(spec.Values) == len(spec.Names) {
+				edge.Func = b.funcValue(spec.Values[i])
+			}
+			b.accesses = append(b.accesses, edge)
 		}
 		b.variables = append(b.variables, node)
 	}
