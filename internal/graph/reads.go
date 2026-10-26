@@ -59,9 +59,9 @@ func (b *callGraphBuilder) addReceiver(accessor string, x *ast.SelectorExpr, sel
 	pos := b.pos(x.Pos())
 	if takesAddress(sel.Obj().(*types.Func), typ) {
 		if len(steps) > 0 {
-			b.addAddressPath(accessor, steps, x.X, pos, true)
+			b.addAddressPath(accessor, steps, x.X, pos)
 		} else {
-			b.addAddress(accessor, x.X, true)
+			b.addAddress(accessor, x.X)
 		}
 		return
 	}
@@ -79,43 +79,48 @@ func takesAddress(fn *types.Func, recv types.Type) bool {
 	return !isPointer
 }
 
-// addAddress records &e: an escape of the field or var e is (if escape), and
-// no reads on struct-value hops up to the first pointer.
-func (b *callGraphBuilder) addAddress(accessor string, e ast.Expr, escape bool) {
+// addAddress records &e: an escape of the field or var e is, and of every
+// struct value holding it up to the first pointer, with no reads on them.
+func (b *callGraphBuilder) addAddress(accessor string, e ast.Expr) {
 	if x, ok := ast.Unparen(e).(*ast.SelectorExpr); ok {
 		if sel := b.pkg.TypesInfo.Selections[x]; sel != nil && sel.Kind() == types.FieldVal {
 			steps, _ := b.fieldPath(sel.Recv(), sel.Index())
-			b.addAddressPath(accessor, steps, x.X, b.pos(x.Pos()), escape)
+			b.addAddressPath(accessor, steps, x.X, b.pos(x.Pos()))
 			return
 		}
 	}
 	if target := b.targetID(e); target != "" {
-		if escape {
-			b.accesses = append(b.accesses, Access{Accessor: accessor, Target: target, Pos: b.pos(e.Pos()), Kind: EscapeAccess})
-		}
+		b.accesses = append(b.accesses, Access{Accessor: accessor, Target: target, Pos: b.pos(e.Pos()), Kind: EscapeAccess})
 		return
 	}
 	b.expr(accessor, e) // a local, &T{...}, &s.items[i], …
 }
 
-// addAddressPath is addAddress for base.steps: the first pointer met going
-// outward is loaded, so it and everything before it are reads.
-func (b *callGraphBuilder) addAddressPath(accessor string, steps []fieldStep, base ast.Expr, pos string, escape bool) {
+// addAddressPath is addAddress for base.steps. Going outward, each struct value
+// holding the address escapes too, like writes give it content; the first
+// pointer met is loaded, so it and everything before it are reads.
+func (b *callGraphBuilder) addAddressPath(accessor string, steps []fieldStep, base ast.Expr, pos string) {
 	last := len(steps) - 1
-	if escape && steps[last].id != "" {
-		b.accesses = append(b.accesses, Access{Accessor: accessor, Target: steps[last].id, Pos: pos, Kind: EscapeAccess})
-	}
+	b.addEscape(accessor, steps[last], pos)
 	for i := last; i > 0; i-- {
 		if steps[i].viaPointer {
 			b.addReads(accessor, steps[:i], pos)
 			b.expr(accessor, base)
 			return
 		}
+		b.addEscape(accessor, steps[i-1], pos) // its memory holds steps[i]
 	}
 	if steps[0].viaPointer {
 		b.expr(accessor, base)
 	} else {
-		b.addAddress(accessor, base, false)
+		b.addAddress(accessor, base)
+	}
+}
+
+// addEscape records an escape of step.
+func (b *callGraphBuilder) addEscape(accessor string, step fieldStep, pos string) {
+	if step.id != "" {
+		b.accesses = append(b.accesses, Access{Accessor: accessor, Target: step.id, Pos: pos, Kind: EscapeAccess})
 	}
 }
 

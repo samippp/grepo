@@ -72,10 +72,12 @@ const (
 	tRHolder = storePkg + ".Holder"
 	tRLocked = storePkg + ".Locked"
 	tRBag    = storePkg + ".Bag[T]"
+	tROuter  = storePkg + ".Outer"
 
 	idValues = "(*" + tRHolder + ").values"
 	idCalls  = "(*" + tRHolder + ").calls"
 	idHands  = "(*" + tRHolder + ").hands"
+	idNested = "(*" + tROuter + ").nested"
 )
 
 func buildFixtureCallGraph(t *testing.T) *CallGraph {
@@ -362,6 +364,11 @@ func TestCallGraphFunctions(t *testing.T) {
 			[]Param{{Name: "other", Type: "*" + tRHolder}, {Name: "ch", Type: "chan []int"}},
 			[]Param{{Name: "", Type: "map[int]string"}}),
 		readsFunc("bagLen", "139", []Param{{Name: "b", Type: "*" + storePkg + ".Bag[int]"}}, ints),
+		{
+			ID: idNested, Name: "nested", Package: storePkg,
+			Receiver: &Param{Name: "o", Type: "*" + tROuter},
+			Pos:      "store/reads.go:147", Owner: tROuter,
+		},
 	}
 
 	got := make(map[string]Function)
@@ -576,6 +583,14 @@ func TestCallGraphTypes(t *testing.T) {
 			ID: storePkg + ".Slots", Name: "Slots", Package: storePkg, Kind: OtherType, Exported: true,
 			Pos: "store/reads.go:44", Underlying: "[100]byte",
 		},
+		{
+			ID: tROuter, Name: "Outer", Package: storePkg, Kind: StructType, Exported: true,
+			Pos: "store/reads.go:142",
+			Fields: []Field{
+				{ID: tROuter + ".In", Name: "In", Type: tRHolder, Pos: "store/reads.go:143"},
+				{ID: tROuter + ".L", Name: "L", Type: tRLocked, Pos: "store/reads.go:144"},
+			},
+		},
 	}
 
 	got := make(map[string]Type)
@@ -776,6 +791,8 @@ func TestCallGraphCalls(t *testing.T) {
 		{Caller: idHands, Callee: storePkg + ".keep", Pos: rat("133"), CallKind: StaticCall, Args: []Arg{{"r.Ptr", "*" + tRPart}}},
 		{Caller: idHands, Callee: storePkg + ".sum", Pos: rat("134"), CallKind: StaticCall, Args: []Arg{{"r.Items[1:]", "[]int"}}},
 		{Caller: idHands, Callee: storePkg + ".use", Pos: rat("134"), CallKind: StaticCall, Args: []Arg{{"sum(r.Items[1:])", "int"}}},
+		{Caller: idNested, Callee: "(*" + tRPart + ").Bump", Pos: rat("149"), CallKind: StaticCall, Args: []Arg{}},
+		{Caller: idNested, Callee: "(*sync.Mutex).Lock", Pos: rat("150"), CallKind: StaticCall, Args: []Arg{}},
 	}
 
 	got := make(map[string]bool)
@@ -948,6 +965,8 @@ func TestCallGraphThrough(t *testing.T) {
 		{idCalls, "(*" + tRHolder + ").Touch", rat("106")}:     storePkg + ".shared",  // a package var
 		{idCalls, "", rat("107")}:                              storePkg + ".OnReady", // a package var holding a func
 		{storePkg + ".lock", "(*sync.Mutex).Lock", rat("115")}: tRLocked + ".Mutex",   // promoted: the embedded field
+		{idNested, "(*" + tRPart + ").Bump", rat("149")}:       tRHolder + ".Val",     // the innermost field
+		{idNested, "(*sync.Mutex).Lock", rat("150")}:           tRLocked + ".Mutex",
 		// None for r.Touch() (a param) or f() and g() (method values in locals).
 	}
 
@@ -1020,9 +1039,11 @@ func TestCallGraphReads(t *testing.T) {
 		r(idWritesR, tRHolder+".Step", "86"),
 		// 87: update only; append is a builtin, so no escape either.
 
-		// addresses: & is an escape; no reads on struct-value hops up to the first pointer.
+		// addresses: & is an escape, and so is every struct-value hop up to the
+		// first pointer (no reads on them); the pointer and hops before it are read.
 		e(idAddrs, tRHolder+".N", "91"),
-		e(idAddrs, tRPart+".X", "92"), // nothing on Holder.Val
+		e(idAddrs, tRPart+".X", "92"),
+		e(idAddrs, tRHolder+".Val", "92"), // Val's memory holds X
 		e(idAddrs, tRPart+".X", "93"),
 		r(idAddrs, tRHolder+".Ptr", "93"), // the pointer is loaded
 		e(idAddrs, storePkg+".shared", "95"),
@@ -1068,6 +1089,24 @@ func TestCallGraphReads(t *testing.T) {
 
 		// The generic field, like writes.
 		r(storePkg+".bagLen", tRBag+".items", "139"),
+
+		// nested: escapes reach every enclosing struct value, like writes' content.
+		e(idNested, tRPart+".X", "148"),
+		e(idNested, tRHolder+".Val", "148"),
+		e(idNested, tROuter+".In", "148"),
+		e(idNested, tRHolder+".Val", "149"), // pointer method on a nested value
+		e(idNested, tROuter+".In", "149"),
+		e(idNested, tRLocked+".Mutex", "150"), // promoted, on a value field
+		e(idNested, tROuter+".L", "150"),
+		e(idNested, tRBase+".ID", "151"), // embedded hops too
+		e(idNested, tRHolder+".Base", "151"),
+		e(idNested, tROuter+".In", "151"),
+		e(idNested, tRPart+".X", "152"),
+		e(idNested, tRHolder+".Val", "152"),
+		e(idNested, storePkg+".shared", "152"), // the package var holding it
+		e(idNested, tRPart+".X", "153"),
+		r(idNested, tRHolder+".Ptr", "153"), // stops at the pointer: it and the hops before it are read
+		r(idNested, tROuter+".In", "153"),
 	}
 
 	got := make(map[string]int)

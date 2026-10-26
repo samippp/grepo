@@ -137,3 +137,18 @@ func (r *Holder) hands(other *Holder, ch chan []int) map[int]string {
 }
 
 func bagLen(b *Bag[int]) int { return len(b.items) }
+
+// Escapes through struct values reach every enclosing field, up to the first pointer.
+type Outer struct {
+	In Holder
+	L  Locked
+}
+
+func (o *Outer) nested() {
+	_ = &o.In.Val.X
+	o.In.Val.Bump()
+	o.L.Lock()
+	_ = &o.In.ID
+	_ = &shared.Val.X
+	_ = &o.In.Ptr.X
+}

@@ -76,7 +76,7 @@ func (b *callGraphBuilder) expr(id string, e ast.Expr) {
 		return
 	case *ast.UnaryExpr:
 		if e.Op == token.AND {
-			b.addAddress(id, e.X, true)
+			b.addAddress(id, e.X)
 			return
 		}
 	case *ast.CallExpr:
