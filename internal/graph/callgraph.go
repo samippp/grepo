@@ -24,7 +24,8 @@ type Function struct {
 	Results  []Param `json:"results"`
 	Exported bool    `json:"exported"`
 	Pos      string  `json:"pos"`
-	Owner    string  `json:"owner,omitempty"` // methods: ID of the type that declares it
+	Owner    string  `json:"owner,omitempty"`  // methods: ID of the type that declares it
+	Parent   string  `json:"parent,omitempty"` // closures: the enclosing function or closure, or the package var
 }
 
 // Type is a named type declared in the repo.
@@ -94,12 +95,14 @@ type FunctionCall struct {
 	CallKind CallKind `json:"callKind"`
 	Args     []Arg    `json:"args"`
 	Through  string   `json:"through,omitempty"` // field or package var the call is made on or takes its func from
+	Stmt     string   `json:"stmt,omitempty"`    // "go" or "defer" when the call is that statement's
 }
 
 // Arg is one argument at a call site.
 type Arg struct {
-	Expr string `json:"expr"` // as written, e.g. "u.Name"
-	Type string `json:"type"` // e.g. "string"
+	Expr string `json:"expr"`           // as written, e.g. "u.Name"
+	Type string `json:"type"`           // e.g. "string"
+	Func string `json:"func,omitempty"` // the function the argument is: a closure, a declared function, a method value
 }
 
 type CallKind string
@@ -116,6 +119,7 @@ type Access struct {
 	Target   string     `json:"target"`   // VarID or FieldID, in the repo or not
 	Pos      string     `json:"pos"`
 	Kind     AccessKind `json:"kind"`
+	Func     string     `json:"func,omitempty"` // assign / construct: the function the written value is
 }
 
 type AccessKind string

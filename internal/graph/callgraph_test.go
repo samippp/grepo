@@ -60,7 +60,7 @@ const (
 	tSaveResult1 = mainPkg + ".save.result#1"
 	tSaveResult2 = mainPkg + ".save.result#2"
 	tLocalNamer  = mainPkg + ".announce.namer#1"
-	tJob         = mainPkg + ".spawn.job#1"
+	tJob         = mainPkg + ".spawn$1.job#1"
 	tBox         = mainPkg + ".wrap.box#1"
 
 	// Writes fixture (store/writes.go).
@@ -80,6 +80,11 @@ const (
 	idCalls  = "(*" + tRHolder + ").calls"
 	idHands  = "(*" + tRHolder + ").hands"
 	idNested = "(*" + tROuter + ").nested"
+
+	// Closures fixture (store/closures.go).
+	tCRunner   = storePkg + ".Runner"
+	idClosures = "(*" + tCRunner + ").closures"
+	idStart    = "(*" + tCRunner + ").start"
 )
 
 // fixtureCallGraph loads and builds testdata/simple once for every test.
@@ -375,6 +380,40 @@ func TestCallGraphFunctions(t *testing.T) {
 			[]Param{{Name: "", Type: "map[int]string"}}),
 		readsFunc("bagLen", "139", []Param{{Name: "b", Type: "*" + storePkg + ".Bag[int]"}}, ints),
 		readsFunc("sized", "157", []Param{{Name: "b", Type: "[100]byte"}}, []Param{{Name: "", Type: "[100]byte"}}),
+
+		// The closures fixture's declared functions (store/closures.go).
+		{
+			ID: idStart, Name: "start", Package: storePkg,
+			Receiver: &Param{Name: "r", Type: "*" + tCRunner},
+			Pos:      "store/closures.go:15", Owner: tCRunner,
+		},
+		{
+			ID: "(*" + tCRunner + ").serve", Name: "serve", Package: storePkg,
+			Receiver: &Param{Name: "r", Type: "*" + tCRunner},
+			Params:   []Param{{Name: "w", Type: "net/http.ResponseWriter"}, {Name: "req", Type: "*net/http.Request"}},
+			Pos:      "store/closures.go:17", Owner: tCRunner,
+		},
+		{
+			ID: storePkg + ".handle", Name: "handle", Package: storePkg,
+			Params: []Param{{Name: "w", Type: "net/http.ResponseWriter"}, {Name: "req", Type: "*net/http.Request"}},
+			Pos:    "store/closures.go:19",
+		},
+		{
+			ID: storePkg + ".double", Name: "double", Package: storePkg,
+			Params: []Param{{Name: "x", Type: "T"}}, Results: []Param{{Name: "", Type: "T"}},
+			Pos: "store/closures.go:21",
+		},
+		{
+			ID: storePkg + ".mapAll", Name: "mapAll", Package: storePkg,
+			Params: []Param{{Name: "xs", Type: "[]T"}, {Name: "f", Type: "func(T) T"}},
+			Pos:    "store/closures.go:23",
+		},
+		{
+			ID: idClosures, Name: "closures", Package: storePkg,
+			Receiver: &Param{Name: "r", Type: "*" + tCRunner},
+			Params:   []Param{{Name: "xs", Type: "[]string"}},
+			Pos:      "store/closures.go:29", Owner: tCRunner,
+		},
 		{
 			ID: idNested, Name: "nested", Package: storePkg,
 			Receiver: &Param{Name: "o", Type: "*" + tROuter},
@@ -382,7 +421,72 @@ func TestCallGraphFunctions(t *testing.T) {
 		},
 	}
 
-	checkExact(t, "function", g.Functions, want, formatFunction)
+	// Closures have their own test.
+	var got []Function
+	for _, f := range g.Functions {
+		if f.Parent == "" {
+			got = append(got, f)
+		}
+	}
+	checkExact(t, "function", got, want, formatFunction)
+}
+
+func TestCallGraphClosures(t *testing.T) {
+	g := buildFixtureCallGraph(t)
+
+	// closure is a closure node: no receiver, owner or export, even inside methods.
+	// The fixture's closures are in store, except main.go's.
+	closure := func(parent string, n int, pos string, params, results []Param) Function {
+		id := fmt.Sprintf("%s$%d", parent, n)
+		pkg := storePkg
+		if strings.HasPrefix(pos, "main.go:") {
+			pkg = mainPkg
+		}
+		return Function{
+			ID: id, Name: id[strings.LastIndex(id, ".")+1:], Package: pkg,
+			Params: params, Results: results, Pos: pos, Parent: parent,
+		}
+	}
+	at := func(line string) string { return "store/closures.go:" + line }
+	c1 := idClosures + "$1"
+
+	want := []Function{
+		// Existing fixture code.
+		closure(idMain, 1, "main.go:25", nil, nil),
+		closure(mainPkg+".spawn", 1, "main.go:107", nil, nil), // holds the local type job
+		closure(storePkg+".OnReady", 1, "store/reads.go:52", nil, nil),
+		closure(idValues, 1, "store/reads.go:76", nil, nil),
+		closure(storePkg+".sized", 1, "store/reads.go:159", []Param{{Name: "d", Type: "[100]byte"}}, nil),
+
+		// In a generic function.
+		closure(storePkg+".mapAll", 1, at("25"), nil, nil),
+		// In a method, numbered in source order; nested ones under their parent.
+		closure(idClosures, 1, at("30"), nil, nil),
+		closure(c1, 1, at("31"), nil, nil),
+		closure(idClosures, 2, at("33"), nil, nil),
+		closure(idClosures, 3, at("37"), nil, nil),
+		closure(idClosures, 4, at("38"), nil, nil),
+		closure(idClosures, 5, at("39"), []Param{{Name: "i", Type: "int"}, {Name: "j", Type: "int"}}, []Param{{Name: "", Type: "bool"}}),
+		closure(idClosures, 6, at("43"), nil, nil),
+		closure(idClosures, 7, at("45"), nil, []Param{{Name: "", Type: "error"}}),
+		// Package level: under the var each value initializes.
+		closure(storePkg+".hooks", 1, at("49"), nil, nil),
+		closure(storePkg+".fallback", 1, at("49"), nil, nil),
+		closure(storePkg+".nested", 1, at("53"), nil, nil),
+		closure(storePkg+".nested$1", 1, at("54"), nil, nil),
+	}
+	// A blank var has no node: its closure is the package's, named after _.
+	blank := closure(storePkg+"._", 1, at("51"), nil, []Param{{Name: "", Type: "int"}})
+	blank.Parent = storePkg
+	want = append(want, blank)
+
+	var got []Function
+	for _, f := range g.Functions {
+		if f.Parent != "" {
+			got = append(got, f)
+		}
+	}
+	checkExact(t, "closure", got, want, formatFunction)
 }
 
 func TestCallGraphTypes(t *testing.T) {
@@ -493,7 +597,7 @@ func TestCallGraphTypes(t *testing.T) {
 			ID: tLocalNamer, Name: "namer", Package: mainPkg, Kind: InterfaceType,
 			Pos: "main.go:99",
 		},
-		// Inside a closure: the parent is still spawn (#13).
+		// Inside a closure: the closure is its parent.
 		{
 			ID: tJob, Name: "job", Package: mainPkg, Kind: StructType,
 			Pos:    "main.go:108",
@@ -578,6 +682,14 @@ func TestCallGraphTypes(t *testing.T) {
 			Pos: "store/reads.go:44", Underlying: "[100]byte",
 		},
 		{
+			ID: tCRunner, Name: "Runner", Package: storePkg, Kind: StructType, Exported: true,
+			Pos: "store/closures.go:10",
+			Fields: []Field{
+				{ID: tCRunner + ".OnDone", Name: "OnDone", Type: "func()", Pos: "store/closures.go:11"},
+				{ID: tCRunner + ".Run", Name: "Run", Type: "func() error", Pos: "store/closures.go:12"},
+			},
+		},
+		{
 			ID: tROuter, Name: "Outer", Package: storePkg, Kind: StructType, Exported: true,
 			Pos: "store/reads.go:142",
 			Fields: []Field{
@@ -653,6 +765,9 @@ func TestCallGraphVariables(t *testing.T) {
 		{ID: storePkg + ".shared", Name: "shared", Package: storePkg, Type: tRHolder, Pos: "store/reads.go:50"},
 		{ID: storePkg + ".OnReady", Name: "OnReady", Package: storePkg, Type: "func()", Exported: true, Pos: "store/reads.go:52"},
 		{ID: storePkg + ".table", Name: "table", Package: storePkg, Type: "[100]int", Pos: "store/reads.go:164"},
+		{ID: storePkg + ".hooks", Name: "hooks", Package: storePkg, Type: "func()", Pos: "store/closures.go:49"},
+		{ID: storePkg + ".fallback", Name: "fallback", Package: storePkg, Type: "func()", Pos: "store/closures.go:49"},
+		{ID: storePkg + ".nested", Name: "nested", Package: storePkg, Type: "func()", Pos: "store/closures.go:53"},
 	}
 
 	checkExact(t, "variable", g.Variables, want, func(v Variable) string { return fmt.Sprintf("%+v", v) })
@@ -662,49 +777,51 @@ func TestCallGraphCalls(t *testing.T) {
 	g := buildFixtureCallGraph(t)
 
 	rat := func(line string) string { return "store/reads.go:" + line }
+	cat := func(line string) string { return "store/closures.go:" + line }
 
 	want := []FunctionCall{
 		// store.New(): function in another package.
 		{Caller: idMain, Callee: idNew, Pos: "main.go:16", CallKind: StaticCall},
 		// s.Get(1) where s is *Store: method on a concrete type.
 		{Caller: idMain, Callee: idGet, Pos: "main.go:17", CallKind: StaticCall,
-			Args: []Arg{{"1", "int"}}},
+			Args: []Arg{{Expr: "1", Type: "int"}}},
 		// g.Get(2) where g is store.Getter: points at the interface method.
 		{Caller: idMain, Callee: "(" + storePkg + ".Getter).Get", Pos: "main.go:20", CallKind: InterfaceCall,
-			Args: []Arg{{"2", "int"}}},
+			Args: []Arg{{Expr: "2", Type: "int"}}},
 		// f(u.Name) where f := greet: a function value, target unknown.
 		{Caller: idMain, Callee: "", Pos: "main.go:23", CallKind: DynamicCall,
-			Args: []Arg{{"u.Name", "string"}}},
-		// greet("closure") inside func(){...}(): belongs to main.
-		{Caller: idMain, Callee: idGreet, Pos: "main.go:26", CallKind: StaticCall,
-			Args: []Arg{{`"closure"`, "string"}}},
+			Args: []Arg{{Expr: "u.Name", Type: "string"}}},
+		// func(){...}(): a static call to the closure, and greet("closure") inside it belongs to it.
+		{Caller: idMain, Callee: idMain + "$1", Pos: "main.go:25", CallKind: StaticCall},
+		{Caller: idMain + "$1", Callee: idGreet, Pos: "main.go:26", CallKind: StaticCall,
+			Args: []Arg{{Expr: `"closure"`, Type: "string"}}},
 		// Nothing for len(u.Name) (built-in) or int64(n) (conversion).
 		// fmt.Println(u): outside the repo, but kept.
 		{Caller: idMain, Callee: "fmt.Println", Pos: "main.go:32", CallKind: StaticCall,
-			Args: []Arg{{"u", "example.com/simple/model.User"}}},
+			Args: []Arg{{Expr: "u", Type: "example.com/simple/model.User"}}},
 		{Caller: idGreet, Callee: "fmt.Println", Pos: "main.go:36", CallKind: StaticCall,
-			Args: []Arg{{`"hello"`, "string"}, {"name", "string"}}},
+			Args: []Arg{{Expr: `"hello"`, Type: "string"}, {Expr: "name", Type: "string"}}},
 		// s.mu.Lock(): method reached through a struct field.
 		{Caller: idGet, Callee: "(*sync.Mutex).Lock", Pos: "store/store.go:24", CallKind: StaticCall},
 		// defer s.mu.Unlock(): deferred calls count too.
 		{Caller: idGet, Callee: "(*sync.Mutex).Unlock", Pos: "store/store.go:25", CallKind: StaticCall},
 		// first[int](xs): explicit type arg (IndexExpr), target known (#4).
 		{Caller: idGenerics, Callee: idFirst, Pos: "main.go:46", CallKind: StaticCall,
-			Args: []Arg{{"xs", "[]int"}}},
+			Args: []Arg{{Expr: "xs", Type: "[]int"}}},
 		// pair[string, int](...): two type args (IndexListExpr) (#4).
 		{Caller: idGenerics, Callee: idPair, Pos: "main.go:47", CallKind: StaticCall,
-			Args: []Arg{{`"a"`, "string"}, {"1", "int"}}},
+			Args: []Arg{{Expr: `"a"`, Type: "string"}, {Expr: "1", Type: "int"}}},
 		// handlers[0](...): also an IndexExpr, but a func value, so dynamic.
 		{Caller: idGenerics, Callee: "", Pos: "main.go:50", CallKind: DynamicCall,
-			Args: []Arg{{`"indexed"`, "string"}}},
+			Args: []Arg{{Expr: `"indexed"`, Type: "string"}}},
 		// l.Push(1) on List[int]: callee must be the declared List[T] method (#5).
 		{Caller: idUseList, Callee: idPush, Pos: "main.go:60", CallKind: StaticCall,
-			Args: []Arg{{"1", "int"}}},
+			Args: []Arg{{Expr: "1", Type: "int"}}},
 		// Calls from each init are attributed to that init (#6).
 		{Caller: idInit1, Callee: idGreet, Pos: "main.go:64", CallKind: StaticCall,
-			Args: []Arg{{`"init 1"`, "string"}}},
+			Args: []Arg{{Expr: `"init 1"`, Type: "string"}}},
 		{Caller: idInit2, Callee: idGreet, Pos: "main.go:66", CallKind: StaticCall,
-			Args: []Arg{{`"init 2"`, "string"}}},
+			Args: []Arg{{Expr: `"init 2"`, Type: "string"}}},
 		// Package-level calls: the caller is the package itself (#7).
 		{Caller: storePkg, Callee: idNew, Pos: "store/vars.go:4", CallKind: StaticCall},
 		{Caller: storePkg, Callee: storePkg + ".load", Pos: "store/vars.go:11", CallKind: StaticCall},
@@ -719,15 +836,15 @@ func TestCallGraphCalls(t *testing.T) {
 		{Caller: mainPkg + ".announce", Callee: "(" + tLocalNamer + ").Name", Pos: "main.go:101", CallKind: InterfaceCall},
 
 		// The reads fixture's calls (store/reads.go). Their Through is in TestCallGraphThrough.
-		{Caller: idValues, Callee: storePkg + ".use", Pos: rat("64"), CallKind: StaticCall, Args: []Arg{{"r.N", "int"}}},
-		{Caller: idValues, Callee: storePkg + ".two", Pos: rat("75"), CallKind: StaticCall, Args: []Arg{{"r.N", "int"}, {"r.N", "int"}}},
-		// No call for the func literal called on line 76.
+		{Caller: idValues, Callee: storePkg + ".use", Pos: rat("64"), CallKind: StaticCall, Args: []Arg{{Expr: "r.N", Type: "int"}}},
+		{Caller: idValues, Callee: storePkg + ".two", Pos: rat("75"), CallKind: StaticCall, Args: []Arg{{Expr: "r.N", Type: "int"}, {Expr: "r.N", Type: "int"}}},
+		{Caller: idValues, Callee: idValues + "$1", Pos: rat("76"), CallKind: StaticCall}, // the func literal called where it's written
 		{Caller: idCalls, Callee: "(*" + tRPart + ").Bump", Pos: rat("99"), CallKind: StaticCall},
 		{Caller: idCalls, Callee: "(*" + tRPart + ").Bump", Pos: rat("100"), CallKind: StaticCall},
 		{Caller: idCalls, Callee: "(" + tRPart + ").Value", Pos: rat("101"), CallKind: StaticCall},
 		{Caller: idCalls, Callee: "(net/http.Handler).ServeHTTP", Pos: rat("102"), CallKind: InterfaceCall,
-			Args: []Arg{{"w", "net/http.ResponseWriter"}, {"req", "*net/http.Request"}}},
-		{Caller: idCalls, Callee: "", Pos: rat("103"), CallKind: DynamicCall, Args: []Arg{{"nil", "untyped nil"}}},
+			Args: []Arg{{Expr: "w", Type: "net/http.ResponseWriter"}, {Expr: "req", Type: "*net/http.Request"}}},
+		{Caller: idCalls, Callee: "", Pos: rat("103"), CallKind: DynamicCall, Args: []Arg{{Expr: "nil", Type: "untyped nil"}}},
 		{Caller: idCalls, Callee: "(*sync.Mutex).Lock", Pos: rat("104"), CallKind: StaticCall},
 		{Caller: idCalls, Callee: "(*" + tRHolder + ").Touch", Pos: rat("105"), CallKind: StaticCall},
 		{Caller: idCalls, Callee: "(*" + tRHolder + ").Touch", Pos: rat("106"), CallKind: StaticCall},
@@ -735,13 +852,45 @@ func TestCallGraphCalls(t *testing.T) {
 		{Caller: idCalls, Callee: "", Pos: rat("110"), CallKind: DynamicCall},
 		{Caller: idCalls, Callee: "", Pos: rat("111"), CallKind: DynamicCall},
 		{Caller: storePkg + ".lock", Callee: "(*sync.Mutex).Lock", Pos: rat("115"), CallKind: StaticCall},
-		{Caller: idHands, Callee: storePkg + ".sum", Pos: rat("128"), CallKind: StaticCall, Args: []Arg{{"r.Items", "[]int"}}},
-		{Caller: idHands, Callee: storePkg + ".use", Pos: rat("128"), CallKind: StaticCall, Args: []Arg{{"sum(r.Items)", "int"}}},
-		{Caller: idHands, Callee: storePkg + ".keep", Pos: rat("133"), CallKind: StaticCall, Args: []Arg{{"r.Ptr", "*" + tRPart}}},
-		{Caller: idHands, Callee: storePkg + ".sum", Pos: rat("134"), CallKind: StaticCall, Args: []Arg{{"r.Items[1:]", "[]int"}}},
-		{Caller: idHands, Callee: storePkg + ".use", Pos: rat("134"), CallKind: StaticCall, Args: []Arg{{"sum(r.Items[1:])", "int"}}},
+		{Caller: idHands, Callee: storePkg + ".sum", Pos: rat("128"), CallKind: StaticCall, Args: []Arg{{Expr: "r.Items", Type: "[]int"}}},
+		{Caller: idHands, Callee: storePkg + ".use", Pos: rat("128"), CallKind: StaticCall, Args: []Arg{{Expr: "sum(r.Items)", Type: "int"}}},
+		{Caller: idHands, Callee: storePkg + ".keep", Pos: rat("133"), CallKind: StaticCall, Args: []Arg{{Expr: "r.Ptr", Type: "*" + tRPart}}},
+		{Caller: idHands, Callee: storePkg + ".sum", Pos: rat("134"), CallKind: StaticCall, Args: []Arg{{Expr: "r.Items[1:]", Type: "[]int"}}},
+		{Caller: idHands, Callee: storePkg + ".use", Pos: rat("134"), CallKind: StaticCall, Args: []Arg{{Expr: "sum(r.Items[1:])", Type: "int"}}},
 		{Caller: idNested, Callee: "(*" + tRPart + ").Bump", Pos: rat("149"), CallKind: StaticCall, Args: []Arg{}},
 		{Caller: idNested, Callee: "(*sync.Mutex).Lock", Pos: rat("150"), CallKind: StaticCall, Args: []Arg{}},
+
+		// go func(){...}() in spawn.
+		{Caller: mainPkg + ".spawn", Callee: mainPkg + ".spawn$1", Pos: "main.go:107", CallKind: StaticCall, Stmt: "go"},
+
+		// The closures fixture (store/closures.go).
+		{Caller: storePkg + ".mapAll", Callee: storePkg + ".mapAll$1", Pos: cat("25"), CallKind: StaticCall},
+		{Caller: storePkg + ".mapAll$1", Callee: "", Pos: cat("25"), CallKind: DynamicCall, Args: []Arg{{Expr: "xs[i]", Type: "T"}}},
+		{Caller: idClosures, Callee: idClosures + "$1", Pos: cat("30"), CallKind: StaticCall},
+		{Caller: idClosures + "$1", Callee: idClosures + "$1$1", Pos: cat("31"), CallKind: StaticCall},
+		{Caller: idClosures, Callee: "", Pos: cat("34"), CallKind: DynamicCall}, // inc(): through a local, not guessed
+		{Caller: idClosures, Callee: idStart, Pos: cat("35"), CallKind: StaticCall, Stmt: "go"},
+		{Caller: idClosures, Callee: idStart, Pos: cat("36"), CallKind: StaticCall, Stmt: "defer"},
+		{Caller: idClosures, Callee: idClosures + "$3", Pos: cat("37"), CallKind: StaticCall, Stmt: "go"},
+		{Caller: idClosures + "$3", Callee: idStart, Pos: cat("37"), CallKind: StaticCall},
+		{Caller: idClosures, Callee: idClosures + "$4", Pos: cat("38"), CallKind: StaticCall, Stmt: "defer"},
+		// Func: the function an argument is: a closure, a declared function, a method value, a generic instance.
+		{Caller: idClosures, Callee: "sort.Slice", Pos: cat("39"), CallKind: StaticCall, Args: []Arg{
+			{Expr: "xs", Type: "[]string"},
+			{Expr: "(func(i, j int) bool literal)", Type: "func(i int, j int) bool", Func: idClosures + "$5"}}},
+		{Caller: idClosures, Callee: "net/http.HandleFunc", Pos: cat("40"), CallKind: StaticCall, Args: []Arg{
+			{Expr: `"/a"`, Type: "string"},
+			{Expr: "handle", Type: "func(w net/http.ResponseWriter, req *net/http.Request)", Func: storePkg + ".handle"}}},
+		{Caller: idClosures, Callee: "net/http.HandleFunc", Pos: cat("41"), CallKind: StaticCall, Args: []Arg{
+			{Expr: `"/b"`, Type: "string"},
+			{Expr: "r.serve", Type: "func(w net/http.ResponseWriter, req *net/http.Request)", Func: "(*" + tCRunner + ").serve"}}},
+		{Caller: idClosures, Callee: storePkg + ".mapAll", Pos: cat("42"), CallKind: StaticCall, Args: []Arg{
+			{Expr: "xs", Type: "[]string"},
+			{Expr: "double[string]", Type: "func(x string) string", Func: storePkg + ".double"}}},
+		{Caller: idClosures, Callee: "", Pos: cat("46"), CallKind: DynamicCall}, // r.OnDone(): Through, not a target
+		// Package level: the package calls the blank var's closure; nested's closure calls its own.
+		{Caller: storePkg, Callee: storePkg + "._$1", Pos: cat("51"), CallKind: StaticCall},
+		{Caller: storePkg + ".nested$1", Callee: storePkg + ".nested$1$1", Pos: cat("54"), CallKind: StaticCall},
 	}
 
 	checkExact(t, "call", g.Calls, want, formatCall)
@@ -754,8 +903,14 @@ func TestCallGraphAccesses(t *testing.T) {
 	w := func(accessor, target, pos string, kind AccessKind) Access {
 		return Access{Accessor: accessor, Target: target, Pos: pos, Kind: kind}
 	}
+	wf := func(accessor, target, pos string, kind AccessKind, fn string) Access {
+		a := w(accessor, target, pos, kind)
+		a.Func = fn
+		return a
+	}
 	at := func(line string) string { return "store/writes.go:" + line }
 	rat := func(line string) string { return "store/reads.go:" + line }
+	cat := func(line string) string { return "store/closures.go:" + line }
 	idWritesR := "(*" + tRHolder + ").writes"
 
 	want := []Access{
@@ -839,10 +994,19 @@ func TestCallGraphAccesses(t *testing.T) {
 		w(storePkg+".promoted", tWInner+".X", at("94"), AssignAccess),
 		w(storePkg+".promoted", storePkg+".Wrapped.Inner", at("94"), ContentAccess),
 
+		// Writes in the closures fixture (store/closures.go). Func: the function the value is.
+		wf(idClosures, tCRunner+".OnDone", cat("43"), AssignAccess, idClosures+"$6"),
+		wf(idClosures, tCRunner+".OnDone", cat("44"), AssignAccess, idStart), // a method value
+		wf(idClosures, tCRunner+".Run", cat("45"), ConstructAccess, idClosures+"$7"),
+		wf(storePkg, storePkg+".hooks", cat("49"), ConstructAccess, storePkg+".hooks$1"),
+		wf(storePkg, storePkg+".fallback", cat("49"), ConstructAccess, storePkg+".fallback$1"),
+		wf(storePkg, storePkg+".nested", cat("53"), ConstructAccess, storePkg+".nested$1"),
+		// 51: a blank var has no node, so no construct edge.
+
 		// Writes in the reads fixture (store/reads.go).
 		w("(*"+tRPart+").Bump", tRPart+".X", rat("13"), UpdateAccess),
 		w(storePkg, storePkg+".limit", rat("46"), ConstructAccess),
-		w(storePkg, storePkg+".OnReady", rat("52"), ConstructAccess),
+		wf(storePkg, storePkg+".OnReady", rat("52"), ConstructAccess, storePkg+".OnReady$1"),
 		w(idWritesR, tRPart+".X", rat("81"), AssignAccess),
 		w(idWritesR, tRHolder+".Val", rat("81"), ContentAccess),
 		w(idWritesR, tRPart+".X", rat("82"), AssignAccess),
@@ -890,6 +1054,7 @@ func TestCallGraphThrough(t *testing.T) {
 		{storePkg + ".lock", "(*sync.Mutex).Lock", rat("115")}: tRLocked + ".Mutex",   // promoted: the embedded field
 		{idNested, "(*" + tRPart + ").Bump", rat("149")}:       tRHolder + ".Val",     // the innermost field
 		{idNested, "(*sync.Mutex).Lock", rat("150")}:           tRLocked + ".Mutex",
+		{idClosures, "", "store/closures.go:46"}:               tCRunner + ".OnDone", // a func field
 		// None for r.Touch() (a param) or f() and g() (method values in locals).
 	}
 
@@ -949,8 +1114,8 @@ func TestCallGraphReads(t *testing.T) {
 		r(idValues, tRHolder+".Items", "73"),
 		r(idValues, tRHolder+".Items", "74"), // copy's source
 		r(idValues, tRHolder+".N", "75"),
-		r(idValues, tRHolder+".N", "75"),    // one edge per site: two on this line
-		r(idValues, tRHolder+".Step", "76"), // in a closure: belongs to values
+		r(idValues, tRHolder+".N", "75"),         // one edge per site: two on this line
+		r(idValues+"$1", tRHolder+".Step", "76"), // in a closure: belongs to it
 
 		// writes: no read where the path gets a write edge.
 		// 81, 82: nothing. 83: the write stops at Sub.Ptr, so r.Sub is read.
@@ -1034,7 +1199,7 @@ func TestCallGraphReads(t *testing.T) {
 		r(storePkg+".sized", maxUsers, "157"),
 		r(storePkg+".sized", maxUsers, "157"),
 		r(storePkg+".sized", maxUsers, "158"),
-		r(storePkg+".sized", maxUsers, "159"),
+		r(storePkg+".sized$1", maxUsers, "159"), // the closure's own signature
 		r(storePkg+".sized", maxUsers, "161"),
 		r(storePkg, maxUsers, "164"),
 	}
@@ -1105,14 +1270,22 @@ func formatFunction(f Function) string {
 	if f.Receiver != nil {
 		recv = fmt.Sprint(*f.Receiver)
 	}
-	return fmt.Sprintf("%s {name=%s pkg=%s recv=%s params=%v results=%v exported=%v pos=%s owner=%s}",
-		f.ID, f.Name, f.Package, recv, f.Params, f.Results, f.Exported, f.Pos, f.Owner)
+	return fmt.Sprintf("%s {name=%s pkg=%s recv=%s params=%v results=%v exported=%v pos=%s owner=%s parent=%s}",
+		f.ID, f.Name, f.Package, recv, f.Params, f.Results, f.Exported, f.Pos, f.Owner, f.Parent)
 }
 
 func formatAccess(a Access) string {
-	return fmt.Sprintf("%s %s %s at %s", a.Accessor, a.Kind, a.Target, a.Pos)
+	s := fmt.Sprintf("%s %s %s at %s", a.Accessor, a.Kind, a.Target, a.Pos)
+	if a.Func != "" {
+		s += " func=" + a.Func
+	}
+	return s
 }
 
 func formatCall(c FunctionCall) string {
-	return fmt.Sprintf("%s -> %q at %s (%s) args=%v", c.Caller, c.Callee, c.Pos, c.CallKind, c.Args)
+	s := fmt.Sprintf("%s -> %q at %s (%s) args=%v", c.Caller, c.Callee, c.Pos, c.CallKind, c.Args)
+	if c.Stmt != "" {
+		s += " stmt=" + c.Stmt
+	}
+	return s
 }

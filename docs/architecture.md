@@ -51,14 +51,15 @@ Kind-specific fields (flat; empty for the other kinds):
 
 A type's methods are not stored on it; they are derived from `Function.Owner`.
 
-**`Function`**: plain functions, methods and interface methods.
+**`Function`**: plain functions, methods, interface methods and closures.
 
 ```
 ID, Name, Package, Receiver (*Param, nil if none), Params, Results, Exported, Pos
-Owner → ID of the type that declares it (methods only)
+Owner  → ID of the type that declares it (methods only)
+Parent → closures only: the enclosing function or closure, or the package var it initializes
 ```
 
-Interface methods are `Function` nodes with no `Receiver`, `Owner` set to the interface, and no calls.
+Interface methods are `Function` nodes with no `Receiver`, `Owner` set to the interface, and no calls. Closures have no `Receiver` or `Owner`, even inside methods, and are never exported.
 
 **`Variable`**: package-level `var` and `const`.
 
@@ -77,9 +78,12 @@ Caller    a function ID, or a package path for package-level calls
 Callee    a function ID; "" for dynamic calls
 Pos       "file:line" of the call site (start of the call expression)
 CallKind  static | interface | dynamic
-Args      []{Expr as written, Type}
+Args      []{Expr as written, Type, Func}
+          Func: the function the argument is (a closure, a declared function, a
+          method value: sort.Slice(xs, func…), HandleFunc("/", h)); "" otherwise
 Through   the field or package var the call is made on (s.buf.WriteString) or takes
           its func from (s.onError(err)); "" for locals, params, results
+Stmt      "go" | "defer" when the call is that statement's; "" otherwise
 ```
 
 **`Access`**: one per write, read or escape site.
@@ -89,6 +93,8 @@ Accessor  a function ID, or a package path for package-level values
 Target    a VarID or FieldID, in the repo or not
 Pos       "file:line" of the site (start of the expression)
 Kind      assign | update | content | construct | read | escape
+Func      assign / construct: the function the written value is, like Arg.Func
+          (cobra.Command{RunE: func…}, s.onErr = h); "" otherwise
 ```
 
 **`Implementation`**: a concrete repo type satisfies a repo interface.
@@ -129,7 +135,9 @@ BuildCallGraph
   for each package → file → declaration:
     FuncDecl → handleFuncDecl      Function node (ID via assignFuncDeclID, Owner via receiverOwner)
                 └ walk      recursive descent (walk.go): walk = statements, expr = values,
-                            children = no context change. calls → addCall (+ through);
+                            children = no context change. calls → addCall (+ through, stmt);
+                            func literals → addClosure: a Function node (ID from
+                              numberClosures' pre-pass), then its body with its own ID;
                             local TYPE decls → assignLocalTypeID + handleTypeSpec;
                             writes (writes.go): =, op=, ++, range = → addAssign / addWrite,
                               which hand what they don't write to expr;
@@ -159,7 +167,9 @@ BuildCallGraph
 | Interface method | `(interface).name` | `(…store.Getter).Get` |
 | `init` | `pkg.init@file#n`, numbered per file | `…simple.init@main.go#2` |
 | Type | `pkg.Name` (`CallGraph.TypeID`); generics keep param names, not constraints; built-ins have no package | `…simple.List[T]`, `error` |
-| Local type | enclosing function's ID + `.name#n`, numbered per name in source order | `…simple.save.result#2` |
+| Closure | parent's ID + `$n`, numbered per parent in source order; nested closures nest | `…simple.main$1`, `…simple.main$1$2` |
+| Package-level closure | the var it initializes + `$n`; blank vars use the package (`pkg._$n`) | `…store.OnReady$1` |
+| Local type | enclosing function's or closure's ID + `.name#n`, numbered per name in source order | `…simple.save.result#2`, `…simple.spawn$1.job#1` |
 | Field | type ID + `.` + name | `…store.Store.users` |
 | Variable | `pkg.name` | `…store.defaultStore` |
 | Position (`Pos`) | `file:line`, relative to the repo root: where the record's own syntax is. A node's declaration; an edge's site (the call, the write; a literal's field). The other ends' positions are on their nodes. | `store/store.go:23` |
@@ -180,12 +190,12 @@ BuildCallGraph
 - `init` functions get file + position (`@file#n`); inserting an `init` above another shifts its number (accepted: nothing can call `init`, so no edges break).
 - Method IDs use the type's ID as the receiver (consistent with `Owner`; normalizes renamed type parameters and constraints).
 - Call positions are `file:line` at the start of the call expression.
-- Local types: `parent.name#n`, always numbered. Chosen over `pkg.name@file:line` because the ID says where the type lives (useful to the MCP) and survives line shifts (wiki URLs). The parent is `walkBody`'s caller: the enclosing top-level function, or the package for package-level func literals. Types in closures belong to the enclosing function until closures get nodes (#13), which will rename them once.
+- Local types: `parent.name#n`, always numbered. Chosen over `pkg.name@file:line` because the ID says where the type lives (useful to the MCP) and survives line shifts (wiki URLs). The parent is the innermost enclosing function or closure (`spawn$1.job#1`), or a package-level closure's ID.
 - Local type IDs are assigned during the walk and kept in an `idTable` that `funcID` / `typeID` consult; the graph keeps it, so `CallGraph.FuncID` / `TypeID` work for consumers like vtadiff. A local type missing from the table gets `#?` rather than silently taking a package-level ID.
 
 ### Functions and calls
 - A method is a `Function` with a receiver, not a separate struct.
-- One edge per call site. Calls inside closures belong to the enclosing function.
+- One edge per call site. Calls inside closures belong to the closure (see Closures).
 - Built-ins and conversions are not calls. Calls to code outside the repo are kept (side-effect detection needs them).
 - Interface calls point at the interface method. Dynamic calls have an empty callee; targets are never guessed.
 - `Args` are recorded on each call (expression as written + type).
@@ -232,7 +242,7 @@ BuildCallGraph
 - Escapes of contents (plus the read): a slice or map field or var passed to a function, stored (`m := s.users`, `o.x = s.items`, `T{items: s.items}`), returned, or sent. Only when the expression is the field itself (not `s.items[1:]`); builtins and conversions excluded. Pointers excluded on purpose: "the contents of `db` may change" is true of every pointer field and tells users nothing.
 - Other method calls through a field are reads: pointer field (`s.db.Query`), value receiver (`s.cfg.Addr`), interface (`s.h.ServeHTTP`), func field (`s.onError(err)`).
 - Consts: repo consts are read; outside consts (`time.Second`, `http.StatusOK`) get no edge: they can't change and no consumer needs them. Outside fields and vars are kept (`r.Header`, `os.Args`), like writes; human output hides them by default.
-- Consts are read wherever a type is written: type declarations, signatures (closures too), var types, literal types (`[Max]byte{}`), conversions. Package-level values and types (`type T [Max]byte`, `var t [Max]int`) have the package as accessor. Generic fields use `Origin()`, like writes.
+- Consts are read wherever a type is written: type declarations, signatures (closures too), var types, literal types (`[Max]byte{}`), conversions. Package-level values and types (`type T [Max]byte`, `var t [Max]int`) have the package as accessor; code inside package-level closures has the closure. Generic fields use `Origin()`, like writes.
 - Don't guess what callees do: whether a method changes its receiver isn't decidable at the site (outside bodies are dropped, interfaces have many implementations), so the site records facts and a later analysis may summarize methods (needs the root of each write).
 
 ### Through (M1e)
@@ -246,6 +256,18 @@ BuildCallGraph
 - One exception: an update's matching right-side expression goes in `suppressed`, which `expr` checks, instead of being passed down through every call. It's always a chain of idents and selectors, so skipping it drops nothing else.
 - Chosen over mark-and-skip (handlers mark nodes, a later visit skips them): context stays in one place, and a forgotten case gives a missing read instead of a spurious one.
 - First as a behavior-preserving refactor: existing tests and the `vta-diff` report unchanged, before any reads.
+
+### Closures (#13)
+- Purpose: calls *to* closures. Inline HTTP handlers, goroutines, `sort.Slice` comparators and cobra `RunE`s are closures; without nodes, entry points (M4) can't find inline handlers and flows (M7) can't enter them. Done before M2 because it changes existing edges and IDs, and the store and query layer should be built on the final shape.
+- A closure is a `Function` with `Parent`, not a separate struct, like methods. Everything inside it (calls, accesses, local types, nested closures) belongs to it: "everything `f` does" rolls up through `Parent`. Kept apart rather than merged into the enclosing function, because a goroutine or handler body runs at a different time, often many times, and M4 / M7 need to tell them apart.
+- IDs: parent + `$n` in source order, like SSA (`main$1`, `main$1$2`). Numbered in a pre-pass over each body, not during the walk, so the order is the source order even where the walk visits a statement's parts out of order (writes before right sides). Inserting a closure renumbers later ones in the same parent: accepted, like `init`; local types use `#n` per name, but closures have no name to number by.
+- Package-level closures take the var they initialize as parent (`OnReady$1`), not the package: the ID says what it is, and it doesn't depend on file order. `var a, b = f1, f2` pairs values with names; one value for several names uses the first. Blank vars have no node, so their closures use the package (`pkg._$n`).
+- Calls to closures:
+  - Called where it's written (`func(){…}()`, `go func(){…}()`, `defer func(){…}()`): a static call from the parent to the closure. These are the only calls whose target is a closure.
+  - Through a local, field or var (`inc := func(){…}; inc()`, `s.onErr(err)`): still dynamic. Targets are never guessed; the value could be reassigned.
+- `Func` on `Arg` and on `assign` / `construct` accesses records the function a value *is*, where it lands, so consumers can follow it without guessing: `HandleFunc("/", func…)` links the call to the handler; `cobra.Command{RunE: func…}` links the field to it; `s.onErr = h` plus `Through = Store.onErr` on a later call lets M7 list candidates. It's set only when the expression itself is the function: a closure, a declared function or generic instance (`Origin()`), or a method value or expression. Locals holding functions, returns, and elements of slice / map literals get nothing.
+- `Stmt` on calls: whether the call is `go` or `defer`. A goroutine is where concurrency starts (M4 effects, M7 flows), and the walker is the only place that sees the statement. Applies to every call, not just closures (`go s.run()`).
+- Calls inside closures moving to the closure changes existing edges: `callers greet` now shows `main$1`, whose `Parent` is `main`. The human output (M3) can roll this up.
 
 ### Variables
 - Package level only: local `var` / `const` get no node (an LLM reads function bodies from source).
@@ -274,7 +296,7 @@ BuildCallGraph
 | Item | Status |
 |---|---|
 | #8: type arguments on generic calls | deferred to M7 |
-| #13: closure nodes | open; likely with M7 |
+| Closures through locals | `inc := func(){…}; inc()` stays dynamic; the closure node exists, but nothing links the call to it |
 | #14: implementations of outside interfaces | open |
 | Aliasing through locals | `m := s.users; m[k] = v` writes into `Store.users` but gets no `content` edge; the `escape` at `m := s.users` makes the gap visible |
 | Pointer contents | `s.db.Close()`, `f(s.db)` may change what `db` points to; no edge by design (only direct writes like `s.db.x = 1` give `content`) |

@@ -102,7 +102,7 @@ func announce(v any) {
 	}
 }
 
-// In a closure: belongs to the enclosing function until closures get nodes (#13).
+// In a closure: the closure is its parent.
 func spawn() {
 	go func() {
 		type job struct{ *store.Store }
