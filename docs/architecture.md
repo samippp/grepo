@@ -147,15 +147,15 @@ BuildCallGraph
                               addSelector; & → addAddress; receivers → addReceiver;
                               passed / stored / returned / sent → handed
     GenDecl  → handleGenDecl       switch on token:
-                ├ TYPE      → handleTypeSpec   Type node; struct → structFields;
+                ├ TYPE      → handleTypeSpec   Type node (types.go); struct → structFields;
                 │                              interface → embeds + addInterfaceMethod;
                 │                              collects concrete / interface objects;
                 │                              consts in the type expr read by the package
-                └ VAR/CONST → handleValueSpec  Variable nodes; construct edges for vars
-                                               with a value; calls and accesses in values
-                                               with the package as caller
+                └ VAR/CONST → handleValueSpec  Variable nodes (variables.go); construct edges
+                                               for vars with a value; calls and accesses in
+                                               values with the package as caller
   after the walk:
-    addImplementations   method-name index → candidates → types.Implements
+    addImplementations   (types.go) method-name index → candidates → types.Implements
     sort every list
 ```
 
