@@ -7,8 +7,10 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"maps"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/samippp/grepo/internal/load"
@@ -72,22 +74,32 @@ const (
 	tRHolder = storePkg + ".Holder"
 	tRLocked = storePkg + ".Locked"
 	tRBag    = storePkg + ".Bag[T]"
+	tROuter  = storePkg + ".Outer"
 
 	idValues = "(*" + tRHolder + ").values"
 	idCalls  = "(*" + tRHolder + ").calls"
 	idHands  = "(*" + tRHolder + ").hands"
+	idNested = "(*" + tROuter + ").nested"
 )
+
+// fixtureCallGraph loads and builds testdata/simple once for every test.
+// Tests only read the graph.
+var fixtureCallGraph = sync.OnceValues(func() (*CallGraph, error) {
+	res, err := load.Load(context.Background(), "testdata/simple", slog.New(slog.DiscardHandler))
+	if err != nil {
+		return nil, err
+	}
+	return BuildCallGraph(res), nil
+})
 
 func buildFixtureCallGraph(t *testing.T) *CallGraph {
 	t.Helper()
-	res, err := load.Load(context.Background(), "testdata/simple", slog.New(slog.DiscardHandler))
+	g, err := fixtureCallGraph()
 	if err != nil {
 		t.Fatal(err)
 	}
-	g := BuildCallGraph(res)
 	if len(g.Functions) == 0 && len(g.Calls) == 0 {
-		//t.Skip("BuildCallGraph not implemented yet")
-		t.Error("Functions and calls not scanned. 0 for all")
+		t.Fatal("no functions or calls found")
 	}
 	return g
 }
@@ -362,26 +374,14 @@ func TestCallGraphFunctions(t *testing.T) {
 			[]Param{{Name: "other", Type: "*" + tRHolder}, {Name: "ch", Type: "chan []int"}},
 			[]Param{{Name: "", Type: "map[int]string"}}),
 		readsFunc("bagLen", "139", []Param{{Name: "b", Type: "*" + storePkg + ".Bag[int]"}}, ints),
+		{
+			ID: idNested, Name: "nested", Package: storePkg,
+			Receiver: &Param{Name: "o", Type: "*" + tROuter},
+			Pos:      "store/reads.go:147", Owner: tROuter,
+		},
 	}
 
-	got := make(map[string]Function)
-	for _, f := range g.Functions {
-		got[f.ID] = f
-	}
-	for _, w := range want {
-		f, ok := got[w.ID]
-		if !ok {
-			t.Errorf("missing function %s", w.ID)
-			continue
-		}
-		if !equalFunction(f, w) {
-			t.Errorf("function %s:\n got  %s\n want %s", w.ID, formatFunction(f), formatFunction(w))
-		}
-		delete(got, w.ID)
-	}
-	for id := range got {
-		t.Errorf("unexpected function %s", id)
-	}
+	checkExact(t, "function", g.Functions, want, formatFunction)
 }
 
 func TestCallGraphTypes(t *testing.T) {
@@ -576,26 +576,17 @@ func TestCallGraphTypes(t *testing.T) {
 			ID: storePkg + ".Slots", Name: "Slots", Package: storePkg, Kind: OtherType, Exported: true,
 			Pos: "store/reads.go:44", Underlying: "[100]byte",
 		},
+		{
+			ID: tROuter, Name: "Outer", Package: storePkg, Kind: StructType, Exported: true,
+			Pos: "store/reads.go:142",
+			Fields: []Field{
+				{ID: tROuter + ".In", Name: "In", Type: tRHolder, Pos: "store/reads.go:143"},
+				{ID: tROuter + ".L", Name: "L", Type: tRLocked, Pos: "store/reads.go:144"},
+			},
+		},
 	}
 
-	got := make(map[string]Type)
-	for _, ty := range g.Types {
-		got[ty.ID] = ty
-	}
-	for _, w := range want {
-		ty, ok := got[w.ID]
-		if !ok {
-			t.Errorf("missing type %s", w.ID)
-			continue
-		}
-		if !equalType(ty, w) {
-			t.Errorf("type %s:\n got  %+v\n want %+v", w.ID, ty, w)
-		}
-		delete(got, w.ID)
-	}
-	for id := range got {
-		t.Errorf("unexpected type %s", id)
-	}
+	checkExact(t, "type", g.Types, want, func(ty Type) string { return fmt.Sprintf("%+v", ty) })
 }
 
 func TestCallGraphImplementations(t *testing.T) {
@@ -619,19 +610,7 @@ func TestCallGraphImplementations(t *testing.T) {
 		// and interfaces outside the repo (UserID implements fmt.Stringer).
 	}
 
-	got := make(map[Implementation]bool)
-	for _, im := range g.Implementations {
-		got[im] = true
-	}
-	for _, w := range want {
-		if !got[w] {
-			t.Errorf("missing implementation %+v", w)
-		}
-		delete(got, w)
-	}
-	for im := range got {
-		t.Errorf("unexpected implementation %+v", im)
-	}
+	checkExact(t, "implementation", g.Implementations, want, func(im Implementation) string { return fmt.Sprintf("%+v", im) })
 }
 
 func TestCallGraphVariables(t *testing.T) {
@@ -674,24 +653,7 @@ func TestCallGraphVariables(t *testing.T) {
 		{ID: storePkg + ".OnReady", Name: "OnReady", Package: storePkg, Type: "func()", Exported: true, Pos: "store/reads.go:52"},
 	}
 
-	got := make(map[string]Variable)
-	for _, x := range g.Variables {
-		got[x.ID] = x
-	}
-	for _, w := range want {
-		x, ok := got[w.ID]
-		if !ok {
-			t.Errorf("missing variable %s", w.ID)
-			continue
-		}
-		if x != w {
-			t.Errorf("variable %s:\n got  %+v\n want %+v", w.ID, x, w)
-		}
-		delete(got, w.ID)
-	}
-	for id := range got {
-		t.Errorf("unexpected variable %s", id)
-	}
+	checkExact(t, "variable", g.Variables, want, func(v Variable) string { return fmt.Sprintf("%+v", v) })
 }
 
 func TestCallGraphCalls(t *testing.T) {
@@ -776,22 +738,11 @@ func TestCallGraphCalls(t *testing.T) {
 		{Caller: idHands, Callee: storePkg + ".keep", Pos: rat("133"), CallKind: StaticCall, Args: []Arg{{"r.Ptr", "*" + tRPart}}},
 		{Caller: idHands, Callee: storePkg + ".sum", Pos: rat("134"), CallKind: StaticCall, Args: []Arg{{"r.Items[1:]", "[]int"}}},
 		{Caller: idHands, Callee: storePkg + ".use", Pos: rat("134"), CallKind: StaticCall, Args: []Arg{{"sum(r.Items[1:])", "int"}}},
+		{Caller: idNested, Callee: "(*" + tRPart + ").Bump", Pos: rat("149"), CallKind: StaticCall, Args: []Arg{}},
+		{Caller: idNested, Callee: "(*sync.Mutex).Lock", Pos: rat("150"), CallKind: StaticCall, Args: []Arg{}},
 	}
 
-	got := make(map[string]bool)
-	for _, c := range g.Calls {
-		got[formatCall(c)] = true
-	}
-	for _, w := range want {
-		key := formatCall(w)
-		if !got[key] {
-			t.Errorf("missing call %s", key)
-		}
-		delete(got, key)
-	}
-	for key := range got {
-		t.Errorf("unexpected call %s", key)
-	}
+	checkExact(t, "call", g.Calls, want, formatCall)
 }
 
 func TestCallGraphAccesses(t *testing.T) {
@@ -904,27 +855,14 @@ func TestCallGraphAccesses(t *testing.T) {
 		w(idHands, tRHolder+".Items", rat("131"), ConstructAccess),
 	}
 
-	// Counted, so a duplicated edge shows up as unexpected. Reads and escapes
-	// have their own test.
-	got := make(map[string]int)
+	// Reads and escapes have their own test.
+	var got []Access
 	for _, a := range g.Accesses {
 		if a.Kind != ReadAccess && a.Kind != EscapeAccess {
-			got[formatAccess(a)]++
+			got = append(got, a)
 		}
 	}
-	for _, w := range want {
-		key := formatAccess(w)
-		if got[key] == 0 {
-			t.Errorf("missing access %s", key)
-			continue
-		}
-		got[key]--
-	}
-	for key, n := range got {
-		for range n {
-			t.Errorf("unexpected access %s", key)
-		}
-	}
+	checkExact(t, "access", got, want, formatAccess)
 }
 
 func TestCallGraphThrough(t *testing.T) {
@@ -948,24 +886,24 @@ func TestCallGraphThrough(t *testing.T) {
 		{idCalls, "(*" + tRHolder + ").Touch", rat("106")}:     storePkg + ".shared",  // a package var
 		{idCalls, "", rat("107")}:                              storePkg + ".OnReady", // a package var holding a func
 		{storePkg + ".lock", "(*sync.Mutex).Lock", rat("115")}: tRLocked + ".Mutex",   // promoted: the embedded field
+		{idNested, "(*" + tRPart + ").Bump", rat("149")}:       tRHolder + ".Val",     // the innermost field
+		{idNested, "(*sync.Mutex).Lock", rat("150")}:           tRLocked + ".Mutex",
 		// None for r.Touch() (a param) or f() and g() (method values in locals).
 	}
 
-	got := make(map[site]string)
+	var got []FunctionCall
 	for _, c := range g.Calls {
 		if c.Through != "" {
-			got[site{c.Caller, c.Callee, c.Pos}] = c.Through
+			got = append(got, c)
 		}
 	}
-	for k, w := range want {
-		if got[k] != w {
-			t.Errorf("call %s -> %q at %s: through = %q, want %q", k.caller, k.callee, k.pos, got[k], w)
-		}
-		delete(got, k)
+	var wantCalls []FunctionCall
+	for k, through := range want {
+		wantCalls = append(wantCalls, FunctionCall{Caller: k.caller, Callee: k.callee, Pos: k.pos, Through: through})
 	}
-	for k, v := range got {
-		t.Errorf("unexpected through %q on call %s -> %q at %s", v, k.caller, k.callee, k.pos)
-	}
+	checkExact(t, "through", got, wantCalls, func(c FunctionCall) string {
+		return fmt.Sprintf("%s -> %q at %s: %s", c.Caller, c.Callee, c.Pos, c.Through)
+	})
 }
 
 // Reads and escapes, checked exactly for store/reads.go only: every other
@@ -1020,9 +958,11 @@ func TestCallGraphReads(t *testing.T) {
 		r(idWritesR, tRHolder+".Step", "86"),
 		// 87: update only; append is a builtin, so no escape either.
 
-		// addresses: & is an escape; no reads on struct-value hops up to the first pointer.
+		// addresses: & is an escape, and so is every struct-value hop up to the
+		// first pointer (no reads on them); the pointer and hops before it are read.
 		e(idAddrs, tRHolder+".N", "91"),
-		e(idAddrs, tRPart+".X", "92"), // nothing on Holder.Val
+		e(idAddrs, tRPart+".X", "92"),
+		e(idAddrs, tRHolder+".Val", "92"), // Val's memory holds X
 		e(idAddrs, tRPart+".X", "93"),
 		r(idAddrs, tRHolder+".Ptr", "93"), // the pointer is loaded
 		e(idAddrs, storePkg+".shared", "95"),
@@ -1068,27 +1008,33 @@ func TestCallGraphReads(t *testing.T) {
 
 		// The generic field, like writes.
 		r(storePkg+".bagLen", tRBag+".items", "139"),
+
+		// nested: escapes reach every enclosing struct value, like writes' content.
+		e(idNested, tRPart+".X", "148"),
+		e(idNested, tRHolder+".Val", "148"),
+		e(idNested, tROuter+".In", "148"),
+		e(idNested, tRHolder+".Val", "149"), // pointer method on a nested value
+		e(idNested, tROuter+".In", "149"),
+		e(idNested, tRLocked+".Mutex", "150"), // promoted, on a value field
+		e(idNested, tROuter+".L", "150"),
+		e(idNested, tRBase+".ID", "151"), // embedded hops too
+		e(idNested, tRHolder+".Base", "151"),
+		e(idNested, tROuter+".In", "151"),
+		e(idNested, tRPart+".X", "152"),
+		e(idNested, tRHolder+".Val", "152"),
+		e(idNested, storePkg+".shared", "152"), // the package var holding it
+		e(idNested, tRPart+".X", "153"),
+		r(idNested, tRHolder+".Ptr", "153"), // stops at the pointer: it and the hops before it are read
+		r(idNested, tROuter+".In", "153"),
 	}
 
-	got := make(map[string]int)
+	var got []Access
 	for _, a := range g.Accesses {
 		if (a.Kind == ReadAccess || a.Kind == EscapeAccess) && strings.HasPrefix(a.Pos, "store/reads.go:") {
-			got[formatAccess(a)]++
+			got = append(got, a)
 		}
 	}
-	for _, w := range want {
-		key := formatAccess(w)
-		if got[key] == 0 {
-			t.Errorf("missing access %s", key)
-			continue
-		}
-		got[key]--
-	}
-	for key, n := range got {
-		for range n {
-			t.Errorf("unexpected access %s", key)
-		}
-	}
+	checkExact(t, "access", got, want, formatAccess)
 }
 
 func TestCallGraphIsSorted(t *testing.T) {
@@ -1120,27 +1066,27 @@ func TestCallGraphIsSorted(t *testing.T) {
 	}
 }
 
-// equalFunction treats nil and empty slices as equal.
-func equalFunction(a, b Function) bool {
-	return a.ID == b.ID && a.Name == b.Name && a.Package == b.Package &&
-		equalParam(a.Receiver, b.Receiver) &&
-		slices.Equal(a.Params, b.Params) && slices.Equal(a.Results, b.Results) &&
-		a.Exported == b.Exported && a.Pos == b.Pos && a.Owner == b.Owner
-}
-
-// equalType treats nil and empty slices as equal.
-func equalType(a, b Type) bool {
-	return a.ID == b.ID && a.Name == b.Name && a.Package == b.Package && a.Kind == b.Kind &&
-		a.Exported == b.Exported && a.Pos == b.Pos &&
-		slices.Equal(a.Fields, b.Fields) && slices.Equal(a.Embeds, b.Embeds) &&
-		a.Target == b.Target && a.Underlying == b.Underlying
-}
-
-func equalParam(a, b *Param) bool {
-	if a == nil || b == nil {
-		return a == b
+// checkExact fails for each want missing from got and each got not in want,
+// counting duplicates. Keys start with the ID, so a node with a wrong field
+// shows as a missing and an unexpected line next to each other. %v prints nil
+// and empty slices the same, so either is fine in want.
+func checkExact[T any](t *testing.T, what string, got, want []T, key func(T) string) {
+	t.Helper()
+	n := make(map[string]int)
+	for _, x := range got {
+		n[key(x)]++
 	}
-	return *a == *b
+	for _, x := range want {
+		n[key(x)]--
+	}
+	for _, k := range slices.Sorted(maps.Keys(n)) {
+		for range -n[k] {
+			t.Errorf("missing %s %s", what, k)
+		}
+		for range n[k] {
+			t.Errorf("unexpected %s %s", what, k)
+		}
+	}
 }
 
 func formatFunction(f Function) string {
@@ -1148,8 +1094,8 @@ func formatFunction(f Function) string {
 	if f.Receiver != nil {
 		recv = fmt.Sprint(*f.Receiver)
 	}
-	return fmt.Sprintf("{name=%s pkg=%s recv=%s params=%v results=%v exported=%v pos=%s owner=%s}",
-		f.Name, f.Package, recv, f.Params, f.Results, f.Exported, f.Pos, f.Owner)
+	return fmt.Sprintf("%s {name=%s pkg=%s recv=%s params=%v results=%v exported=%v pos=%s owner=%s}",
+		f.ID, f.Name, f.Package, recv, f.Params, f.Results, f.Exported, f.Pos, f.Owner)
 }
 
 func formatAccess(a Access) string {

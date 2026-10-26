@@ -6,8 +6,8 @@
 // how long it took. Errors in individual packages are logged as warnings rather
 // than failing the run, so partly broken repos still produce output.
 //
-// Planned: from M1 this also writes the results to a SQLite database, which
-// `grepo serve` reads.
+// Planned: from M2 this also writes the results to a SQLite store, which the
+// query layer and `grepo serve` read.
 
 package cli
 
@@ -31,7 +31,7 @@ func newAnalyzeCmd(a *app) *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:   "analyze [github-link | path]",
-		Short: "Analyze a Go repository and output its package graph as JSON",
+		Short: "Analyze a Go repository and output its package and call graphs as JSON",
 		Example: `  grepo analyze https://github.com/spf13/cobra
   grepo analyze ./path/to/repo -o graph.json`,
 		Args: cobra.MaximumNArgs(1),

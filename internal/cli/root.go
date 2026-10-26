@@ -1,6 +1,6 @@
 // Package cli defines grepo's command-line interface, built on cobra.
 //
-// The CLI is one of two front ends. The other is the web app (M3), where users
+// The CLI is one of two front ends. The other is the web app (M5), where users
 // paste a GitHub link. Both drive the same pipeline, so commands stay thin:
 // they parse arguments, call into the pipeline packages (source, load, graph,
 // and later store/llm), and print results. Analysis logic does not belong here.
@@ -11,8 +11,9 @@
 //
 // Commands:
 //   - analyze (analyze.go): analyze a GitHub link or local path and output its
-//     package graph as JSON.
-//   - serve (planned, M3): host the web UI for an analyzed repo.
+//     package and call graphs as JSON.
+//   - vta-diff (vtadiff.go, hidden): compare the call graph with x/tools' VTA.
+//   - serve (planned, M5): host the web UI for an analyzed repo.
 package cli
 
 import (

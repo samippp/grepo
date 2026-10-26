@@ -2,15 +2,16 @@
 //
 // Every function here is a pure transformation: no disk access, no go
 // toolchain, and sorted, deterministic output. That keeps the code easy to test
-// and keeps the JSON stable across runs, which the LLM cache (M4) relies on.
+// and keeps the JSON stable across runs, which the LLM cache (M6) relies on.
 // For the same reason nothing here logs; callers time and log these builders.
 //
 // Builders:
 //   - BuildPackageGraph (this file, M0): which packages import which.
+//   - BuildCallGraph (callgraph.go, M1): types, variables, functions, calls,
+//     accesses and implementations.
 //
 // Planned:
-//   - M1: VTA call graph, and the types that cross package boundaries.
-//   - M5: flows traced from entry points.
+//   - M7: flows traced from entry points.
 package graph
 
 import (

@@ -2,8 +2,8 @@
 //
 // It wraps golang.org/x/tools/go/packages, which runs `go list` inside the
 // target repo, so grepo sees the code exactly as `go build` would: the same
-// go.mod, dependency versions and build tags. Every later stage (graph now,
-// then the call graph and data-flow analysis) consumes the Result from here.
+// go.mod, dependency versions and build tags. Every later stage (the package and
+// call graphs now, data-flow analysis later) consumes the Result from here.
 //
 // What the target repo needs: it must be a Go module whose dependencies can
 // be downloaded. Limitations: only files for the current GOOS/GOARCH are
