@@ -133,11 +133,12 @@ Example: what can `lookup` reach through `g.Get(1)`?
 ```
 BuildCallGraph
   for each package → file → declaration:
-    FuncDecl → handleFuncDecl      Function node (ID via assignFuncDeclID, Owner via receiverOwner)
+    FuncDecl → handleFuncDecl      Function node (functions.go; ID via assignFuncDeclID, Owner via receiverOwner)
                 └ walk      recursive descent (walk.go): walk = statements, expr = values,
-                            children = no context change. calls → addCall (+ through, stmt);
-                            func literals → addClosure: a Function node (ID from
-                              numberClosures' pre-pass), then its body with its own ID;
+                            children = no context change. calls → addCall (calls.go,
+                              + through, stmt);
+                            func literals → addClosure (functions.go): a Function node
+                              (ID from numberClosures' pre-pass), then its body with its own ID;
                             local TYPE decls → assignLocalTypeID + handleTypeSpec;
                             writes (writes.go): =, op=, ++, range = → addAssign / addWrite,
                               which hand what they don't write to expr;
@@ -146,15 +147,15 @@ BuildCallGraph
                               addSelector; & → addAddress; receivers → addReceiver;
                               passed / stored / returned / sent → handed
     GenDecl  → handleGenDecl       switch on token:
-                ├ TYPE      → handleTypeSpec   Type node; struct → structFields;
+                ├ TYPE      → handleTypeSpec   Type node (types.go); struct → structFields;
                 │                              interface → embeds + addInterfaceMethod;
                 │                              collects concrete / interface objects;
                 │                              consts in the type expr read by the package
-                └ VAR/CONST → handleValueSpec  Variable nodes; construct edges for vars
-                                               with a value; calls and accesses in values
-                                               with the package as caller
+                └ VAR/CONST → handleValueSpec  Variable nodes (variables.go); construct edges
+                                               for vars with a value; calls and accesses in
+                                               values with the package as caller
   after the walk:
-    addImplementations   method-name index → candidates → types.Implements
+    addImplementations   (types.go) method-name index → candidates → types.Implements
     sort every list
 ```
 

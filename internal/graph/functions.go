@@ -1,5 +1,5 @@
-// Closures: their nodes and IDs, and Func, the function a value is.
-// See docs/architecture.md for the rules.
+// Functions: the Function nodes (declared functions and methods, interface
+// methods, closures) and Func, the function a value is.
 
 package graph
 
@@ -9,6 +9,65 @@ import (
 	"go/types"
 	"strings"
 )
+
+// handleFuncDecl records a declared function or method, then walks its body.
+func (b *callGraphBuilder) handleFuncDecl(funcDecl *ast.FuncDecl) {
+	// Missing only if the package has type errors; skip it.
+	fn, ok := b.pkg.TypesInfo.Defs[funcDecl.Name].(*types.Func)
+	if !ok {
+		return
+	}
+
+	id := b.assignFuncDeclID(funcDecl, fn)
+	b.functions = append(b.functions, b.newFunction(fn, id))
+	b.expr(id, funcDecl.Type) // consts in its signature: func f(b [Max]byte)
+
+	// A nil *BlockStmt passed as ast.Node isn't == nil, so check here.
+	if funcDecl.Body != nil {
+		b.numberClosures(id, id, funcDecl.Body)
+		b.walk(id, funcDecl.Body)
+	}
+}
+
+// assignFuncDeclID is FuncID(fn), except each init gets "pkg.init@file#n", since a
+// package can have several. Call once per declaration: it counts inits.
+func (b *callGraphBuilder) assignFuncDeclID(funcDecl *ast.FuncDecl, fn *types.Func) string {
+	if funcDecl.Recv != nil || funcDecl.Name.Name != "init" {
+		return b.ids.funcID(fn)
+	}
+	file := rel(b.root, b.pkg.Fset.Position(funcDecl.Pos()).Filename)
+	b.inits[file]++
+	return fmt.Sprintf("%s@%s#%d", fn.FullName(), file, b.inits[file])
+}
+
+// newFunction builds the Function node for fn, with the given ID.
+func (b *callGraphBuilder) newFunction(fn *types.Func, id string) Function {
+	sig := fn.Signature()
+	node := Function{
+		ID:       id,
+		Name:     fn.Name(),
+		Package:  b.pkg.PkgPath,
+		Params:   tupleParams(sig.Params()),
+		Results:  tupleParams(sig.Results()),
+		Exported: fn.Exported(),
+		Pos:      b.pos(fn.Pos()),
+		Owner:    b.ids.receiverOwner(fn),
+	}
+	if recv := sig.Recv(); recv != nil {
+		node.Receiver = &Param{Name: recv.Name(), Type: types.TypeString(recv.Type(), nil)}
+	}
+	return node
+}
+
+// addInterfaceMethod records a method declared in an interface as a
+// Function owned by that interface. It has no body, so no calls.
+func (b *callGraphBuilder) addInterfaceMethod(fn *types.Func) {
+	node := b.newFunction(fn, b.ids.funcID(fn))
+	node.Receiver = nil // interface methods have no written receiver
+	b.functions = append(b.functions, node)
+}
+
+// Closures. See docs/architecture.md for the rules.
 
 // ClosureID is grepo's ID for a func literal in this graph, or "" if it wasn't walked.
 func (g *CallGraph) ClosureID(lit *ast.FuncLit) string { return g.closures[lit] }
