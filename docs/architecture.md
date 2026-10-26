@@ -268,6 +268,7 @@ BuildCallGraph
 - `Func` on `Arg` and on `assign` / `construct` accesses records the function a value *is*, where it lands, so consumers can follow it without guessing: `HandleFunc("/", func…)` links the call to the handler; `cobra.Command{RunE: func…}` links the field to it; `s.onErr = h` plus `Through = Store.onErr` on a later call lets M7 list candidates. It's set only when the expression itself is the function: a closure, a declared function or generic instance (`Origin()`), or a method value or expression. Locals holding functions, returns, and elements of slice / map literals get nothing.
 - `Stmt` on calls: whether the call is `go` or `defer`. A goroutine is where concurrency starts (M4 effects, M7 flows), and the walker is the only place that sees the statement. Applies to every call, not just closures (`go s.run()`).
 - Calls inside closures moving to the closure changes existing edges: `callers greet` now shows `main$1`, whose `Parent` is `main`. The human output (M3) can roll this up.
+- `vta-diff` matches closures by syntax: SSA keeps each closure's `*ast.FuncLit` (`fn.Syntax()`), the node grepo walked, so no numbering has to agree. A range-over-func loop body is a closure to SSA but not in the source; it stays in the code around the loop.
 
 ### Variables
 - Package level only: local `var` / `const` get no node (an LLM reads function bodies from source).

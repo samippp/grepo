@@ -804,7 +804,7 @@ func TestCallGraphCalls(t *testing.T) {
 		// s.mu.Lock(): method reached through a struct field.
 		{Caller: idGet, Callee: "(*sync.Mutex).Lock", Pos: "store/store.go:24", CallKind: StaticCall},
 		// defer s.mu.Unlock(): deferred calls count too.
-		{Caller: idGet, Callee: "(*sync.Mutex).Unlock", Pos: "store/store.go:25", CallKind: StaticCall},
+		{Caller: idGet, Callee: "(*sync.Mutex).Unlock", Pos: "store/store.go:25", CallKind: StaticCall, Stmt: "defer"},
 		// first[int](xs): explicit type arg (IndexExpr), target known (#4).
 		{Caller: idGenerics, Callee: idFirst, Pos: "main.go:46", CallKind: StaticCall,
 			Args: []Arg{{Expr: "xs", Type: "[]int"}}},

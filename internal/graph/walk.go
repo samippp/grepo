@@ -36,12 +36,12 @@ func (b *callGraphBuilder) walk(id string, n ast.Node) {
 		b.addAssign(id, n)
 		return
 	case *ast.IncDecStmt:
-		b.addWrite(id, n.X, UpdateAccess)
+		b.addWrite(id, n.X, UpdateAccess, "")
 		return
 	case *ast.RangeStmt:
 		if n.Tok == token.ASSIGN { // for x = range: := declares locals instead
-			b.addWrite(id, n.Key, AssignAccess)
-			b.addWrite(id, n.Value, AssignAccess)
+			b.addWrite(id, n.Key, AssignAccess, "")
+			b.addWrite(id, n.Value, AssignAccess, "")
 		}
 		b.expr(id, n.X)
 		b.walk(id, n.Body)
@@ -50,6 +50,14 @@ func (b *callGraphBuilder) walk(id string, n ast.Node) {
 		for _, result := range n.Results {
 			b.handed(id, result)
 		}
+		return
+	case *ast.GoStmt:
+		b.stmt[n.Call] = "go"
+		b.expr(id, n.Call)
+		return
+	case *ast.DeferStmt:
+		b.stmt[n.Call] = "defer"
+		b.expr(id, n.Call)
 		return
 	case *ast.SendStmt:
 		b.expr(id, n.Chan)
@@ -113,8 +121,9 @@ func (b *callGraphBuilder) expr(id string, e ast.Expr) {
 		}
 		return
 	case *ast.FuncLit:
-		b.expr(id, e.Type)
-		b.walk(id, e.Body) // closures belong to the enclosing function
+		cid := b.addClosure(e) // what's inside belongs to the closure
+		b.expr(cid, e.Type)
+		b.walk(cid, e.Body)
 		return
 	}
 	b.children(id, e) // binary, index, slice, star, paren, type assertion, …

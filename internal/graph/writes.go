@@ -18,7 +18,11 @@ func (b *callGraphBuilder) addAssign(accessor string, assign *ast.AssignStmt) {
 			if match != nil {
 				b.suppressed[match] = true // update only: no read of the matching expression
 			}
-			b.addWrite(accessor, lhs, kind)
+			fn := ""
+			if kind == AssignAccess && len(assign.Rhs) == len(assign.Lhs) {
+				fn = b.funcValue(assign.Rhs[i]) // s.onErr = h
+			}
+			b.addWrite(accessor, lhs, kind, fn)
 		}
 	}
 	for _, rhs := range assign.Rhs {
@@ -74,7 +78,11 @@ func (b *callGraphBuilder) addConstruct(accessor string, lit *ast.CompositeLit) 
 			field = st.Field(i) // positional
 		}
 		if field != nil {
-			b.accesses = append(b.accesses, Access{Accessor: accessor, Target: FieldID(owner, field.Name()), Pos: b.pos(elt.Pos()), Kind: ConstructAccess})
+			value := elt
+			if kv, ok := elt.(*ast.KeyValueExpr); ok {
+				value = kv.Value
+			}
+			b.accesses = append(b.accesses, Access{Accessor: accessor, Target: FieldID(owner, field.Name()), Pos: b.pos(elt.Pos()), Kind: ConstructAccess, Func: b.funcValue(value)})
 		}
 	}
 }
@@ -96,8 +104,9 @@ func (b *callGraphBuilder) literalStruct(lit *ast.CompositeLit) (named *types.Na
 
 // addWrite records a write of kind to e, then content writes outward: to every
 // struct value whose memory holds e (s.inner.x = 1 changes s.inner), and to the
-// field holding the first pointer on the way, where the walk stops.
-func (b *callGraphBuilder) addWrite(accessor string, e ast.Expr, kind AccessKind) {
+// field holding the first pointer on the way, where the walk stops. fn is the
+// function the written value is, for e's own edge.
+func (b *callGraphBuilder) addWrite(accessor string, e ast.Expr, kind AccessKind, fn string) {
 	if e == nil {
 		return
 	}
@@ -118,7 +127,7 @@ func (b *callGraphBuilder) addWrite(accessor string, e ast.Expr, kind AccessKind
 		last := len(steps) - 1
 		pos := b.pos(x.Pos())
 		if id := steps[last].id; id != "" {
-			b.accesses = append(b.accesses, Access{Accessor: accessor, Target: id, Pos: pos, Kind: kind})
+			b.accesses = append(b.accesses, Access{Accessor: accessor, Target: id, Pos: pos, Kind: kind, Func: fn})
 		}
 		// Out through promoted fields (t.Name via embedded User), then to x.X.
 		for i := last; i > 0; i-- {
@@ -135,13 +144,13 @@ func (b *callGraphBuilder) addWrite(accessor string, e ast.Expr, kind AccessKind
 		if steps[0].viaPointer {
 			b.addContentWrite(accessor, x.X, x.Pos()) // p.x = v: like (*p).x = v
 		} else {
-			b.addWrite(accessor, x.X, ContentAccess)
+			b.addWrite(accessor, x.X, ContentAccess, "")
 		}
 		return
 	}
 	// A package var, by name or pkg.Var. Locals have no holder: no edge.
 	if id := b.holderID(e); id != "" {
-		b.accesses = append(b.accesses, Access{Accessor: accessor, Target: id, Pos: b.pos(e.Pos()), Kind: kind})
+		b.accesses = append(b.accesses, Access{Accessor: accessor, Target: id, Pos: b.pos(e.Pos()), Kind: kind, Func: fn})
 	} else {
 		b.expr(accessor, e)
 	}
@@ -152,7 +161,7 @@ func (b *callGraphBuilder) addWrite(accessor string, e ast.Expr, kind AccessKind
 // to e itself; a slice, map or pointer's are shared, so only e is recorded.
 func (b *callGraphBuilder) addContentWrite(accessor string, e ast.Expr, pos token.Pos) {
 	if _, ok := b.pkg.TypesInfo.TypeOf(e).Underlying().(*types.Array); ok {
-		b.addWrite(accessor, e, ContentAccess)
+		b.addWrite(accessor, e, ContentAccess, "")
 		return
 	}
 	b.addHolderContent(accessor, e, pos)

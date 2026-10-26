@@ -2,14 +2,15 @@
 // VTA, and reports where they differ. It's a dev tool for finding bugs in the
 // walker, not part of the analysis pipeline.
 //
-// VTA describes the program differently (closures are separate functions,
-// package-level calls belong to a synthetic init, interface calls point at
-// concrete targets), so its edges are translated into grepo's IDs first.
+// VTA describes the program differently (package-level calls belong to a
+// synthetic init, interface calls point at concrete targets), so its edges are
+// translated into grepo's IDs first. Closures are matched by their syntax.
 package vtadiff
 
 import (
 	"cmp"
 	"fmt"
+	"go/ast"
 	"go/token"
 	"go/types"
 	"io"
@@ -281,7 +282,7 @@ func (t *translator) vtaEdges() ([]edge, map[string]int) {
 			expected[reason]++
 			return nil
 		}
-		ed := edge{caller: caller, callee: callee, pos: t.pos(e.Site.Pos()), targetType: t.recvTypeID(e.Callee.Func)}
+		ed := edge{caller: caller, callee: callee, pos: t.sitePos(e), targetType: t.recvTypeID(e.Callee.Func)}
 		if !seen[ed] { // generic instances repeat the same edge
 			seen[ed] = true
 			edges = append(edges, ed)
@@ -294,11 +295,15 @@ func (t *translator) vtaEdges() ([]edge, map[string]int) {
 	return edges, expected
 }
 
-// callerID maps a calling function to grepo's caller: closures belong to the
-// enclosing function, and the package initializer is the package itself.
+// callerID maps a calling function to grepo's caller: a closure to its node,
+// and the package initializer to the package itself.
 func (t *translator) callerID(fn *ssa.Function) (string, bool) {
-	for fn.Parent() != nil {
-		fn = fn.Parent()
+	for fn.Synthetic == rangeYield {
+		fn = fn.Parent() // grepo keeps a loop body in the code around the loop
+	}
+	if fn.Parent() != nil {
+		id := t.closureID(fn)
+		return id, id != ""
 	}
 	if o := fn.Origin(); o != nil {
 		fn = o
@@ -318,8 +323,14 @@ func (t *translator) callerID(fn *ssa.Function) (string, bool) {
 // calleeID maps a called function to grepo's callee ID, or gives the reason
 // the edge is an expected difference.
 func (t *translator) calleeID(fn *ssa.Function) (id, reason string) {
+	if fn.Synthetic == rangeYield {
+		return "", "callee is a range-over-func loop body"
+	}
 	if fn.Parent() != nil {
-		return "", "callee is a closure (grepo has no closure nodes)"
+		if id := t.closureID(fn); id != "" {
+			return id, ""
+		}
+		return "", "callee is a closure outside the repo"
 	}
 	if o := fn.Origin(); o != nil {
 		fn = o
@@ -335,6 +346,33 @@ func (t *translator) calleeID(fn *ssa.Function) (id, reason string) {
 		return "", "package initializer calls an init function"
 	}
 	return t.cg.FuncID(obj), ""
+}
+
+// rangeYield marks the closure SSA makes of a range-over-func loop's body.
+// grepo has no node for it: the source has no closure there.
+const rangeYield = "range-over-func yield"
+
+// sitePos is the edge's call site as grepo writes it. A closure called where
+// it's written (func(){…}()) is at its start, not at SSA's "(" after its body.
+func (t *translator) sitePos(e *callgraph.Edge) string {
+	p := e.Site.Pos()
+	if lit, ok := e.Callee.Func.Syntax().(*ast.FuncLit); ok && p >= lit.End() {
+		site, end := t.fset.Position(p), t.fset.Position(lit.End())
+		if site.Filename == end.Filename && site.Line == end.Line {
+			p = lit.Pos()
+		}
+	}
+	return t.pos(p)
+}
+
+// closureID is grepo's ID for an SSA closure: SSA keeps the func literal it
+// came from, the same syntax grepo walked, generic instances included.
+func (t *translator) closureID(fn *ssa.Function) string {
+	lit, ok := fn.Syntax().(*ast.FuncLit)
+	if !ok {
+		return ""
+	}
+	return t.cg.ClosureID(lit)
 }
 
 // funcID is grepo's ID for a declared function: the graph's FuncID, except init
