@@ -267,52 +267,6 @@ type callGraphBuilder struct {
 	implementations []Implementation
 }
 
-func (b *callGraphBuilder) handleFuncDecl(funcDecl *ast.FuncDecl) {
-	// Missing only if the package has type errors; skip it.
-	fn, ok := b.pkg.TypesInfo.Defs[funcDecl.Name].(*types.Func)
-	if !ok {
-		return
-	}
-
-	id := b.assignFuncDeclID(funcDecl, fn)
-	b.functions = append(b.functions, b.newFunction(fn, id))
-	b.expr(id, funcDecl.Type) // consts in its signature: func f(b [Max]byte)
-
-	// A nil *BlockStmt passed as ast.Node isn't == nil, so check here.
-	if funcDecl.Body != nil {
-		b.numberClosures(id, id, funcDecl.Body)
-		b.walk(id, funcDecl.Body)
-	}
-}
-
-// assignFuncDeclID is FuncID(fn), except each init gets "pkg.init@file#n", since a
-// package can have several. Call once per declaration: it counts inits.
-func (b *callGraphBuilder) assignFuncDeclID(funcDecl *ast.FuncDecl, fn *types.Func) string {
-	if funcDecl.Recv != nil || funcDecl.Name.Name != "init" {
-		return b.ids.funcID(fn)
-	}
-	file := rel(b.root, b.pkg.Fset.Position(funcDecl.Pos()).Filename)
-	b.inits[file]++
-	return fmt.Sprintf("%s@%s#%d", fn.FullName(), file, b.inits[file])
-}
-
-// addCall records one call made by callerID.
-func (b *callGraphBuilder) addCall(callerID string, call *ast.CallExpr) {
-	callee, kind, isCall := b.callee(call)
-	if !isCall {
-		return
-	}
-	b.calls = append(b.calls, FunctionCall{
-		Caller:   callerID,
-		Callee:   callee,
-		Pos:      b.pos(call.Pos()),
-		CallKind: kind,
-		Args:     b.args(call.Args),
-		Through:  b.through(call.Fun),
-		Stmt:     b.stmt[call],
-	})
-}
-
 // assignLocalTypeID gives a type declared inside parentID the ID
 // "parent.name#n", numbered per name in source order. Call once per declaration.
 func (b *callGraphBuilder) assignLocalTypeID(parentID string, spec *ast.TypeSpec) {
@@ -323,67 +277,6 @@ func (b *callGraphBuilder) assignLocalTypeID(parentID string, spec *ast.TypeSpec
 	key := parentID + "." + tn.Name()
 	b.localCount[key]++
 	b.ids[tn] = fmt.Sprintf("%s#%d", key, b.localCount[key])
-}
-
-// callee returns the ID of the function call refers to and the call's kind:
-// "" and dynamic if unknown. isCall is false for conversions and built-ins.
-func (b *callGraphBuilder) callee(call *ast.CallExpr) (id string, kind CallKind, isCall bool) {
-	info := b.pkg.TypesInfo
-	if tv := info.Types[call.Fun]; tv.IsType() || tv.IsBuiltin() {
-		return "", "", false // int64(n), len(x)
-	}
-
-	var name *ast.Ident
-	switch fun := unindex(ast.Unparen(call.Fun)).(type) {
-	case *ast.Ident:
-		name = fun // foo(), f(), first[int](), handlers[0]()
-	case *ast.SelectorExpr:
-		name = fun.Sel // pkg.Foo(), obj.Method(), slices.Map[int]()
-	case *ast.FuncLit:
-		return b.closures[fun], StaticCall, true // func(){...}(): called where it's written
-	}
-	// Other shapes (f()()) leave name nil: dynamic.
-
-	fn, _ := info.Uses[name].(*types.Func)
-	if fn == nil {
-		return "", DynamicCall, true
-	}
-	return b.ids.funcID(fn), callKind(fn), true // funcID: List[int].Push → List[T].Push
-}
-
-// unindex strips type args or an index: first[int] → first, handlers[0] → handlers.
-func unindex(e ast.Expr) ast.Expr {
-	switch x := e.(type) {
-	case *ast.IndexExpr:
-		return x.X
-	case *ast.IndexListExpr:
-		return x.X
-	}
-	return e
-}
-
-// callKind classifies a call by its callee.
-func callKind(callee *types.Func) CallKind {
-	if callee == nil {
-		return DynamicCall
-	}
-	if recv := callee.Signature().Recv(); recv != nil && types.IsInterface(recv.Type()) {
-		return InterfaceCall
-	}
-	return StaticCall
-}
-
-// args describes each argument expression at a call site.
-func (b *callGraphBuilder) args(exprs []ast.Expr) []Arg {
-	var args []Arg
-	for _, arg := range exprs {
-		args = append(args, Arg{
-			Expr: types.ExprString(arg),
-			Type: types.TypeString(b.pkg.TypesInfo.TypeOf(arg), nil),
-			Func: b.funcValue(arg),
-		})
-	}
-	return args
 }
 
 // handleGenDecl dispatches a type, var or const declaration to its spec handler.
@@ -560,33 +453,6 @@ func (b *callGraphBuilder) structFields(ownerID string, st *types.Struct) []Fiel
 		})
 	}
 	return fields
-}
-
-// addInterfaceMethod records a method declared in an interface as a
-// Function owned by that interface. It has no body, so no calls.
-func (b *callGraphBuilder) addInterfaceMethod(fn *types.Func) {
-	node := b.newFunction(fn, b.ids.funcID(fn))
-	node.Receiver = nil // interface methods have no written receiver
-	b.functions = append(b.functions, node)
-}
-
-// newFunction builds the Function node for fn, with the given ID.
-func (b *callGraphBuilder) newFunction(fn *types.Func, id string) Function {
-	sig := fn.Signature()
-	node := Function{
-		ID:       id,
-		Name:     fn.Name(),
-		Package:  b.pkg.PkgPath,
-		Params:   tupleParams(sig.Params()),
-		Results:  tupleParams(sig.Results()),
-		Exported: fn.Exported(),
-		Pos:      b.pos(fn.Pos()),
-		Owner:    b.ids.receiverOwner(fn),
-	}
-	if recv := sig.Recv(); recv != nil {
-		node.Receiver = &Param{Name: recv.Name(), Type: types.TypeString(recv.Type(), nil)}
-	}
-	return node
 }
 
 // idTable holds the IDs of local types (declared inside a function), which
