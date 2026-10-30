@@ -236,6 +236,13 @@ func BuildCallGraph(res *load.Result) *CallGraph {
 	}
 }
 
+// buildPackage walks one package. Its output depends only on pkg, the repo
+// root and the repo's package paths, so packages can be built in any order
+// (and cached).
+func buildPackage(pkg *packages.Package, root string, repo map[string]bool) *callGraphBuilder {
+	return &callGraphBuilder{} // not split out of BuildCallGraph yet
+}
+
 // callGraphBuilder holds walk context and results.
 type callGraphBuilder struct {
 	root string            // repo root

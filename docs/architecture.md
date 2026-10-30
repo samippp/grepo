@@ -277,6 +277,13 @@ BuildCallGraph
 - Blank (`_`) variables get no node, but calls in their values are still recorded.
 - Package-level calls use the package as the caller: an existing node, nothing synthetic.
 
+### Per-package building (M2a, planned)
+- `buildPackage(pkg, root, repo)` walks one package with a fresh builder; `BuildCallGraph` merges the results, matches implementations and sorts. The cache stores one package's share, so a share can't depend on any other package's walk.
+- What a share needs from outside is the repo's package paths (which consts are read), passed in. Closure, init and local type numbering is already per declaration or file, so a fresh builder gives the same IDs.
+- Local type IDs are merged after the walk: an implementation can pair a type and an interface from different packages, and `CallGraph.TypeID` / `FuncID` serve every package. A local type can't be named outside its function, so another package's walk never needs its ID; if it did, `typeID` gives `pkg.Name#?`.
+- Implementations stay a pass over type-checker objects for now; matching them from stored per-package summaries is the next step.
+- Tests: each package built alone holds only nodes and edges in its own files, and the shares together are the whole graph; reversing the package order changes nothing; no `#?` IDs.
+
 ### Loading (M2a, planned)
 - Our own loader: `go list` metadata plus `go/types` directly, replacing `go/packages`. Dependencies are type-checked from source, not compiled.
 - Why not compiler export data (`go list -export`): it compiles dependencies with code generation the walker never uses. Cold caddy: ~34s compiling vs ~1–2s type-checking from source; downloads (~50s) are the same either way.

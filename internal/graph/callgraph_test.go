@@ -4,12 +4,17 @@
 package graph
 
 import (
+	"bytes"
 	"cmp"
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"maps"
+	"path"
+	"path/filepath"
 	"slices"
+	"strings"
 	"sync"
 	"testing"
 
@@ -87,15 +92,28 @@ const (
 	idStart    = "(*" + tCRunner + ").start"
 )
 
-// fixtureCallGraph loads and builds testdata/simple once for every test.
-// Tests only read the graph.
+// fixtureLoad and fixtureCallGraph load and build testdata/simple once for
+// every test. Tests only read them.
+var fixtureLoad = sync.OnceValues(func() (*load.Result, error) {
+	return load.Load(context.Background(), "testdata/simple", slog.New(slog.DiscardHandler))
+})
+
 var fixtureCallGraph = sync.OnceValues(func() (*CallGraph, error) {
-	res, err := load.Load(context.Background(), "testdata/simple", slog.New(slog.DiscardHandler))
+	res, err := fixtureLoad()
 	if err != nil {
 		return nil, err
 	}
 	return BuildCallGraph(res), nil
 })
+
+func loadFixture(t *testing.T) *load.Result {
+	t.Helper()
+	res, err := fixtureLoad()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return res
+}
 
 func buildFixtureCallGraph(t *testing.T) *CallGraph {
 	t.Helper()
@@ -135,6 +153,100 @@ func TestCallGraphIsSorted(t *testing.T) {
 		return cmp.Or(cmp.Compare(a.Accessor, b.Accessor), cmp.Compare(a.Pos, b.Pos), cmp.Compare(a.Target, b.Target), cmp.Compare(a.Kind, b.Kind))
 	}) {
 		t.Error("Accesses are not sorted by Accessor, then Pos, then Target, then Kind")
+	}
+}
+
+// Each package's share of the graph depends only on that package and the
+// repo's package paths. Built alone, it holds only nodes and edges in its own
+// files, and the shares together are the whole graph. Implementations are
+// matched across packages afterwards, so they're not in any share.
+func TestBuildPackage(t *testing.T) {
+	res := loadFixture(t)
+	g := buildFixtureCallGraph(t)
+	repo := map[string]bool{}
+	for _, pkg := range res.Packages {
+		repo[pkg.PkgPath] = true
+	}
+
+	var types []Type
+	var variables []Variable
+	var functions []Function
+	var calls []FunctionCall
+	var accesses []Access
+	for _, pkg := range res.Packages {
+		b := buildPackage(pkg, res.Dir, repo)
+
+		dir, err := filepath.Rel(res.Dir, filepath.Dir(pkg.GoFiles[0]))
+		if err != nil {
+			t.Fatal(err)
+		}
+		inPkg := func(what, id, pos string) {
+			file, _, _ := strings.Cut(pos, ":")
+			if path.Dir(file) != filepath.ToSlash(dir) {
+				t.Errorf("%s: %s %s at %s is outside the package", pkg.PkgPath, what, id, pos)
+			}
+		}
+		for _, x := range b.types {
+			inPkg("type", x.ID, x.Pos)
+		}
+		for _, x := range b.variables {
+			inPkg("variable", x.ID, x.Pos)
+		}
+		for _, x := range b.functions {
+			inPkg("function", x.ID, x.Pos)
+		}
+		for _, x := range b.calls {
+			inPkg("call from", x.Caller, x.Pos)
+		}
+		for _, x := range b.accesses {
+			inPkg("access by", x.Accessor, x.Pos)
+		}
+
+		types = append(types, b.types...)
+		variables = append(variables, b.variables...)
+		functions = append(functions, b.functions...)
+		calls = append(calls, b.calls...)
+		accesses = append(accesses, b.accesses...)
+	}
+
+	checkExact(t, "type", types, g.Types, func(ty Type) string { return fmt.Sprintf("%+v", ty) })
+	checkExact(t, "variable", variables, g.Variables, func(v Variable) string { return fmt.Sprintf("%+v", v) })
+	checkExact(t, "function", functions, g.Functions, formatFunction)
+	checkExact(t, "call", calls, g.Calls, formatCall)
+	checkExact(t, "access", accesses, g.Accesses, formatAccess)
+}
+
+// The graph doesn't depend on the order packages are built in: cached ones
+// will come back in any order.
+func TestBuildCallGraphPackageOrder(t *testing.T) {
+	res := loadFixture(t)
+	reversed := *res
+	reversed.Packages = slices.Clone(res.Packages)
+	slices.Reverse(reversed.Packages)
+
+	want, err := json.Marshal(buildFixtureCallGraph(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := json.Marshal(BuildCallGraph(&reversed))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, want) {
+		t.Error("the graph changes when packages are built in reverse order")
+	}
+}
+
+// Every local type in the graph got its ID from the package declaring it.
+// typeID falls back to "pkg.Name#?" for one it wasn't given, which would mean
+// a package's share needs another package's local types.
+func TestCallGraphLocalTypesResolved(t *testing.T) {
+	data, err := json.Marshal(buildFixtureCallGraph(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n := bytes.Count(data, []byte("#?")); n > 0 {
+		t.Errorf("%d unresolved local type IDs (#?) in the graph", n)
 	}
 }
 
