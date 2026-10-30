@@ -5,6 +5,7 @@ import (
 	"go/ast"
 	"go/token"
 	"go/types"
+	"maps"
 	"slices"
 	"strconv"
 
@@ -157,66 +158,92 @@ func (g *CallGraph) TypeID(tn *types.TypeName) string { return g.ids.typeID(tn) 
 //   - external calls kept; interface calls point at the interface method
 //   - dynamic calls have no Callee; one edge per call site; output sorted
 func BuildCallGraph(res *load.Result) *CallGraph {
+	repo := map[string]bool{}
+	for _, pkg := range res.Packages {
+		repo[pkg.PkgPath] = true
+	}
+
+	g := &CallGraph{
+		Types:     []Type{},
+		Variables: []Variable{},
+		Functions: []Function{},
+		Calls:     []FunctionCall{},
+		Accesses:  []Access{},
+		ids:       idTable{},
+		closures:  map[*ast.FuncLit]string{},
+	}
+	var concrete, interfaces []*types.TypeName
+	for _, pkg := range res.Packages {
+		b := buildPackage(pkg, res.Dir, repo)
+		g.Types = append(g.Types, b.types...)
+		g.Variables = append(g.Variables, b.variables...)
+		g.Functions = append(g.Functions, b.functions...)
+		g.Calls = append(g.Calls, b.calls...)
+		g.Accesses = append(g.Accesses, b.accesses...)
+		maps.Copy(g.ids, b.ids)
+		maps.Copy(g.closures, b.closures)
+		concrete = append(concrete, b.concrete...)
+		interfaces = append(interfaces, b.interfaces...)
+	}
+	// After the merge: a type and an interface it implements can be in different packages.
+	g.Implementations = implementations(concrete, interfaces, g.ids)
+	g.sort()
+	return g
+}
+
+// buildPackage walks one package. Its output depends only on pkg, the repo
+// root and the repo's package paths, so packages can be built in any order
+// (and cached).
+func buildPackage(pkg *packages.Package, root string, repo map[string]bool) *callGraphBuilder {
 	b := &callGraphBuilder{
-		root:       res.Dir,
+		root:       root,
+		pkg:        pkg,
 		inits:      map[string]int{},
 		ids:        idTable{},
 		localCount: map[string]int{},
-		repo:       map[string]bool{},
+		repo:       repo,
 		suppressed: map[ast.Expr]bool{},
 		stmt:       map[*ast.CallExpr]string{},
 
 		closures:      map[*ast.FuncLit]string{},
 		closureParent: map[*ast.FuncLit]string{},
 		closureCount:  map[string]int{},
-
-		types:     []Type{},
-		variables: []Variable{},
-		functions: []Function{},
-		calls:     []FunctionCall{},
-		accesses:  []Access{},
-
-		implementations: []Implementation{},
 	}
-
-	for _, pkg := range res.Packages {
-		b.repo[pkg.PkgPath] = true
-	}
-	for _, pkg := range res.Packages {
-		b.pkg = pkg
-		for _, syntaxTree := range pkg.Syntax {
-			for _, decl := range syntaxTree.Decls {
-				switch d := decl.(type) {
-				case *ast.FuncDecl:
-					b.handleFuncDecl(d)
-				case *ast.GenDecl:
-					b.handleGenDecl(d)
-				}
+	for _, syntaxTree := range pkg.Syntax {
+		for _, decl := range syntaxTree.Decls {
+			switch d := decl.(type) {
+			case *ast.FuncDecl:
+				b.handleFuncDecl(d)
+			case *ast.GenDecl:
+				b.handleGenDecl(d)
 			}
 		}
 	}
-	b.addImplementations()
+	return b
+}
 
-	slices.SortFunc(b.types, func(x, y Type) int {
+// sort puts every list in a stable order, whatever order packages were built in.
+func (g *CallGraph) sort() {
+	slices.SortFunc(g.Types, func(x, y Type) int {
 		return cmp.Compare(x.ID, y.ID)
 	})
-	slices.SortFunc(b.variables, func(x, y Variable) int {
+	slices.SortFunc(g.Variables, func(x, y Variable) int {
 		return cmp.Compare(x.ID, y.ID)
 	})
-	slices.SortFunc(b.functions, func(x, y Function) int {
+	slices.SortFunc(g.Functions, func(x, y Function) int {
 		return cmp.Compare(x.ID, y.ID)
 	})
-	slices.SortFunc(b.implementations, func(x, y Implementation) int {
+	slices.SortFunc(g.Implementations, func(x, y Implementation) int {
 		return cmp.Or(cmp.Compare(x.Type, y.Type), cmp.Compare(x.Interface, y.Interface))
 	})
-	slices.SortFunc(b.calls, func(x, y FunctionCall) int {
+	slices.SortFunc(g.Calls, func(x, y FunctionCall) int {
 		return cmp.Or(
 			cmp.Compare(x.Caller, y.Caller),
 			cmp.Compare(x.Pos, y.Pos),
 			cmp.Compare(x.Callee, y.Callee),
 		)
 	})
-	slices.SortFunc(b.accesses, func(x, y Access) int {
+	slices.SortFunc(g.Accesses, func(x, y Access) int {
 		return cmp.Or(
 			cmp.Compare(x.Accessor, y.Accessor),
 			cmp.Compare(x.Pos, y.Pos),
@@ -224,19 +251,9 @@ func BuildCallGraph(res *load.Result) *CallGraph {
 			cmp.Compare(x.Kind, y.Kind),
 		)
 	})
-	return &CallGraph{
-		Types:           b.types,
-		Variables:       b.variables,
-		Functions:       b.functions,
-		Calls:           b.calls,
-		Accesses:        b.accesses,
-		Implementations: b.implementations,
-		ids:             b.ids,
-		closures:        b.closures,
-	}
 }
 
-// callGraphBuilder holds walk context and results.
+// callGraphBuilder holds one package's walk context and results.
 type callGraphBuilder struct {
 	root string            // repo root
 	pkg  *packages.Package // current package
@@ -258,11 +275,9 @@ type callGraphBuilder struct {
 	calls     []FunctionCall
 	accesses  []Access
 
-	// Kept during the walk for computing implementations afterwards.
+	// This package's types, for implementations() after the merge.
 	concrete   []*types.TypeName
 	interfaces []*types.TypeName
-
-	implementations []Implementation
 }
 
 // handleGenDecl dispatches a type, var or const declaration to its spec handler.

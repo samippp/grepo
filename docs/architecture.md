@@ -132,7 +132,8 @@ Example: what can `lookup` reach through `g.Get(1)`?
 
 ```
 BuildCallGraph
-  for each package → file → declaration:
+  for each package: buildPackage (fresh builder, nothing shared but the repo's package paths)
+  → for each file → declaration:
     FuncDecl → handleFuncDecl      Function node (functions.go; ID via assignFuncDeclID, Owner via receiverOwner)
                 └ walk      recursive descent (walk.go): walk = statements, expr = values,
                             children = no context change. calls → addCall (calls.go,
@@ -154,8 +155,8 @@ BuildCallGraph
                 └ VAR/CONST → handleValueSpec  Variable nodes (variables.go); construct edges
                                                for vars with a value; calls and accesses in
                                                values with the package as caller
-  after the walk:
-    addImplementations   (types.go) method-name index → candidates → types.Implements
+  after every package: merge the shares (nodes, edges, local type and closure IDs)
+    implementations   (types.go) method-name index → candidates → types.Implements
     sort every list
 ```
 
@@ -276,6 +277,13 @@ BuildCallGraph
 - `var` and `const` share one struct, with a `Const` flag. Consts store exact values; untyped consts keep `untyped int`.
 - Blank (`_`) variables get no node, but calls in their values are still recorded.
 - Package-level calls use the package as the caller: an existing node, nothing synthetic.
+
+### Per-package building (M2a)
+- `buildPackage(pkg, root, repo)` walks one package with a fresh builder; `BuildCallGraph` merges the results, matches implementations and sorts. The cache stores one package's share, so a share can't depend on any other package's walk.
+- What a share needs from outside is the repo's package paths (which consts are read), passed in. Closure, init and local type numbering is already per declaration or file, so a fresh builder gives the same IDs.
+- Local type IDs are merged after the walk: an implementation can pair a type and an interface from different packages, and `CallGraph.TypeID` / `FuncID` serve every package. A local type can't be named outside its function, so another package's walk never needs its ID; if it did, `typeID` gives `pkg.Name#?`.
+- Implementations stay a pass over type-checker objects for now; matching them from stored per-package summaries is the next step.
+- Tests: each package built alone holds only nodes and edges in its own files, and the shares together are the whole graph; reversing the package order changes nothing; no `#?` IDs.
 
 ### Loading (M2a, planned)
 - Our own loader: `go list` metadata plus `go/types` directly, replacing `go/packages`. Dependencies are type-checked from source, not compiled.

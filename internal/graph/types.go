@@ -45,7 +45,7 @@ func (b *callGraphBuilder) handleTypeSpec(spec *ast.TypeSpec) {
 	}
 	b.types = append(b.types, node)
 
-	// Kept for addImplementations. Generics can't be checked without type args.
+	// Kept for implementations(). Generics can't be checked without type args.
 	if !isGeneric(tn) {
 		if node.Kind == InterfaceType {
 			b.interfaces = append(b.interfaces, tn)
@@ -82,24 +82,26 @@ func (b *callGraphBuilder) structFields(ownerID string, st *types.Struct) []Fiel
 	return fields
 }
 
-// addImplementations records which concrete repo types satisfy which repo
-// interfaces. It runs after the walk: the two can be in different packages.
-// Each type is only checked against interfaces indexed under one of its methods.
-func (b *callGraphBuilder) addImplementations() {
-	byMethod := indexInterfaces(b.interfaces)
-	for _, tn := range b.concrete {
+// implementations records which concrete repo types satisfy which repo
+// interfaces, across all packages. Each type is only checked against
+// interfaces indexed under one of its methods.
+func implementations(concrete, interfaces []*types.TypeName, ids idTable) []Implementation {
+	out := []Implementation{}
+	byMethod := indexInterfaces(interfaces)
+	for _, tn := range concrete {
 		for _, entry := range candidateInterfaces(tn, byMethod) {
 			value := types.Implements(tn.Type(), entry.iface)
 			if !value && !types.Implements(types.NewPointer(tn.Type()), entry.iface) {
 				continue
 			}
-			b.implementations = append(b.implementations, Implementation{
-				Type:        b.ids.typeID(tn),
-				Interface:   b.ids.typeID(entry.name),
+			out = append(out, Implementation{
+				Type:        ids.typeID(tn),
+				Interface:   ids.typeID(entry.name),
 				PointerOnly: !value, // *T always has T's methods, so only the reverse can fail
 			})
 		}
 	}
+	return out
 }
 
 // ifaceEntry is an interface in the method index.
