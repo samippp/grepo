@@ -150,13 +150,13 @@ BuildCallGraph
     GenDecl  → handleGenDecl       switch on token:
                 ├ TYPE      → handleTypeSpec   Type node (types.go); struct → structFields;
                 │                              interface → embeds + addInterfaceMethod;
-                │                              summarize: method sets by key (summary.go);
+                │                              summarize: method sets by key (implementations.go);
                 │                              consts in the type expr read by the package
                 └ VAR/CONST → handleValueSpec  Variable nodes (variables.go); construct edges
                                                for vars with a value; calls and accesses in
                                                values with the package as caller
   after every package: merge the shares (nodes, edges, local type and closure IDs)
-    matchImplementations   (summary.go) first-method-key index → method sets compared by key
+    matchImplementations   (implementations.go) first-method-key index → method sets compared by key
     sort every list
 ```
 

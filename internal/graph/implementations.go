@@ -1,5 +1,5 @@
-// Type summaries: what implementation matching needs from a package, stored
-// with it so a cached package needs no type-checking.
+// Implementations: which concrete types implement which interfaces, matched
+// from per-package type summaries so a cached package needs no type-checking.
 
 package graph
 

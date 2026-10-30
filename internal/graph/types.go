@@ -1,4 +1,4 @@
-// Types: the Type nodes. Implementations are matched from their summaries (summary.go).
+// Types: the Type nodes. Implementations are matched from their summaries (implementations.go).
 
 package graph
 
