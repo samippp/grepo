@@ -69,7 +69,7 @@ internal/vtadiff/  dev tool: compares the call graph with x/tools' VTA
     - SQLite store, one entry per package, keyed by a hash of its files, its dependencies' keys, the build config and grepo's analysis version (so an upgrade that changes the graph rebuilds old entries)
     - edits rebuild the changed package and its reverse imports; everything else is reused
     - implementations from per-package method sets and interfaces, matched across packages afterwards
-    - own loader: `go list` + `go/types`, dependencies type-checked from source without bodies, type summaries cached per package
+    - own loader: `go list` + `go/types`, dependencies type-checked from source without bodies, export data cached per package
   - **M2b: query layer**
     - short names (`Store.users`, `store.Get`) resolved to IDs, with ambiguity handling
     - defaults to the package in the current directory

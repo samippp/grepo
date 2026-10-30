@@ -298,7 +298,7 @@ BuildCallGraph
 - Why not compiler export data (`go list -export`): it compiles dependencies with code generation the walker never uses. Cold caddy: ~34s compiling vs ~1–2s type-checking from source; downloads (~50s) are the same either way.
 - Why not `go/packages` with `NeedDeps`: it can't take cached types, so every load re-type-checks all dependencies, and it keeps syntax and `TypesInfo` for every one of them.
 - Dependencies: function bodies dropped before type-checking (dependents only need declarations); only their types are kept; errors in them are ignored (dropping bodies leaves unused imports).
-- Each package's type summary is cached (`gcexportdata`) next to its graph entry, so unchanged packages are imported from the cache and an edit re-checks only the changed package and its reverse imports.
+- Each package's export data (`gcexportdata`) is cached next to its graph entry, so unchanged packages are imported from the cache and an edit re-checks only the changed package and its reverse imports.
 - The importer decides what a missing package becomes, so the partial pass (M2c) uses the same path.
 - Given up: reusing the user's warm `go build` cache, and the Go tooling quirks `go/packages` handles (build tags, cgo files, vendor, `go.work`, overlays) that are now ours to get right through `go list`.
 - To check: memory on large repos, and per-package errors (cgo especially).
