@@ -106,6 +106,9 @@ const (
 	tImpl         = storePkg + ".makers.impl#1"
 	tOthersResult = storePkg + ".others.result#1"
 	tOther        = storePkg + ".others.other#1"
+	tStringish    = modelPkg + ".Stringish"
+	tWriter       = storePkg + ".Writer"
+	tRawWriter    = storePkg + ".rawWriter"
 )
 
 // fixtureLoad and fixtureCallGraph load and build testdata/simple once for

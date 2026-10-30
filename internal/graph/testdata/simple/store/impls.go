@@ -38,3 +38,10 @@ func others() {
 	type result struct{}
 	type other interface{ Make() result }
 }
+
+// byte is uint8: rawWriter is a Writer.
+type Writer interface{ Write(p []uint8) }
+
+type rawWriter struct{}
+
+func (rawWriter) Write(p []byte) {}

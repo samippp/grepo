@@ -127,6 +127,9 @@ func TestCallGraphTypes(t *testing.T) {
 			Fields: []Field{emb(tImpl, "maker", storePkg+".maker", iat("34"))}},
 		{ID: tOthersResult, Name: "result", Package: storePkg, Kind: StructType, Pos: iat("38")},
 		{ID: tOther, Name: "other", Package: storePkg, Kind: InterfaceType, Pos: iat("39")},
+		{ID: tStringish, Name: "Stringish", Package: modelPkg, Kind: InterfaceType, Exported: true, Pos: "model/impls.go:19", Embeds: []string{"~int"}},
+		{ID: tWriter, Name: "Writer", Package: storePkg, Kind: InterfaceType, Exported: true, Pos: iat("43")},
+		{ID: tRawWriter, Name: "rawWriter", Package: storePkg, Kind: StructType, Pos: iat("45")},
 	}
 
 	checkExact(t, "type", g.Types, want, func(ty Type) string { return fmt.Sprintf("%+v", ty) })
@@ -160,6 +163,10 @@ func TestCallGraphImplementations(t *testing.T) {
 		{Type: tVarLog, Interface: tLogger},
 		// impl's Make returns makers' result, not others': a maker, not an other.
 		{Type: tImpl, Interface: tMaker},
+		// byte is uint8.
+		{Type: tRawWriter, Interface: tWriter},
+		// Nothing for Stringish: interfaces with type terms only constrain type
+		// params, so they're left out, though UserID is in its type set.
 		// Nothing for Any: empty interfaces are skipped.
 		// Not listed: interfaces themselves, generic List[T] (no type args to check),
 		// and interfaces outside the repo (UserID implements fmt.Stringer).

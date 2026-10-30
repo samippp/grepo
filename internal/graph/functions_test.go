@@ -141,6 +141,11 @@ func TestCallGraphFunctions(t *testing.T) {
 		{ID: storePkg + ".others", Name: "others", Package: storePkg, Pos: iat("37")},
 		{ID: "(" + tOther + ").Make", Name: "Make", Package: storePkg, Results: ps("", storePkg+".result"),
 			Exported: true, Pos: iat("39"), Owner: tOther},
+		{ID: "(" + tStringish + ").String", Name: "String", Package: modelPkg, Results: ps("", "string"),
+			Exported: true, Pos: "model/impls.go:21", Owner: tStringish},
+		{ID: "(" + tWriter + ").Write", Name: "Write", Package: storePkg, Params: ps("p", "[]uint8"), Exported: true, Pos: iat("43"), Owner: tWriter},
+		{ID: "(" + tRawWriter + ").Write", Name: "Write", Package: storePkg, Receiver: recv("", tRawWriter), Params: ps("p", "[]byte"),
+			Exported: true, Pos: iat("47"), Owner: tRawWriter},
 	}
 
 	// Closures have their own test.
