@@ -285,6 +285,13 @@ BuildCallGraph
 - Implementations stay a pass over type-checker objects for now; matching them from stored per-package summaries is the next step.
 - Tests: each package built alone holds only nodes and edges in its own files, and the shares together are the whole graph; reversing the package order changes nothing; no `#?` IDs.
 
+### Implementations from summaries (M2a, planned)
+- A cached package has no type-checker objects, so `types.Implements` can't run on it. Each package stores a `typeSummary` instead: its concrete types' value and pointer method sets, and its interfaces' method sets (embedded ones included), as method key → signature key. Matching reruns every time over all summaries, so a new interface in one package is matched against unchanged types in others.
+- Not `gcexportdata` plus `types.Implements`: export data holds package-level declarations only, and local types (`announce.namer`, `spawn$1.job`) take part in implementations.
+- Signature keys are equal exactly when the type checker's identity holds: param names dropped, aliases resolved, `...T` kept apart from `[]T`, local types by their grepo ID (two local `result`s both print as `store.result`), and unexported method names qualified by their package (`model`'s `seal` isn't `store`'s).
+- Summaries are plain strings and maps: they're stored as they are (JSON, like the rest of a share).
+- Tests: `model/impls.go` and `store/impls.go` hold one case per rule above; matching from summaries, after a JSON round trip, must give exactly what `types.Implements` gives on the fixture.
+
 ### Loading (M2a, planned)
 - Our own loader: `go list` metadata plus `go/types` directly, replacing `go/packages`. Dependencies are type-checked from source, not compiled.
 - Why not compiler export data (`go list -export`): it compiles dependencies with code generation the walker never uses. Cold caddy: ~34s compiling vs ~1–2s type-checking from source; downloads (~50s) are the same either way.

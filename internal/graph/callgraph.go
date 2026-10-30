@@ -278,6 +278,7 @@ type callGraphBuilder struct {
 	// This package's types, for implementations() after the merge.
 	concrete   []*types.TypeName
 	interfaces []*types.TypeName
+	summary    typeSummary // the same, by method set
 }
 
 // handleGenDecl dispatches a type, var or const declaration to its spec handler.

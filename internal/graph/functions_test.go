@@ -119,6 +119,28 @@ func TestCallGraphFunctions(t *testing.T) {
 		{ID: storePkg + ".mapAll", Name: "mapAll", Package: storePkg, Params: ps("xs", "[]T", "f", "func(T) T"), Pos: cat("23")},
 		{ID: idClosures, Name: "closures", Package: storePkg, Receiver: recv("r", "*"+tCRunner),
 			Params: ps("xs", "[]string"), Pos: cat("29"), Owner: tCRunner},
+
+		// The implementations fixture (model/impls.go, store/impls.go).
+		{ID: "(" + tSealed + ").seal", Name: "seal", Package: modelPkg, Pos: "model/impls.go:8", Owner: tSealed},
+		{ID: "(" + tToken + ").seal", Name: "seal", Package: modelPkg, Receiver: recv("", tToken), Pos: "model/impls.go:12", Owner: tToken},
+		{ID: "(" + tLookup + ").Find", Name: "Find", Package: modelPkg, Params: ps("id", tID), Results: ps("", tUser),
+			Exported: true, Pos: "model/impls.go:15", Owner: tLookup},
+		{ID: "(" + tFake + ").seal", Name: "seal", Package: storePkg, Receiver: recv("", tFake), Pos: iat("8"), Owner: tFake},
+		{ID: "(" + tFinder + ").Find", Name: "Find", Package: storePkg, Receiver: recv("", tFinder), Params: ps("n", "int"),
+			Results: ps("", tUser), Exported: true, Pos: iat("16"), Owner: tFinder},
+		// Variadic params print as their slice type.
+		{ID: "(" + tLogger + ").Log", Name: "Log", Package: storePkg, Params: ps("args", "[]string"), Exported: true, Pos: iat("19"), Owner: tLogger},
+		{ID: "(" + tVarLog + ").Log", Name: "Log", Package: storePkg, Receiver: recv("", tVarLog), Params: ps("xs", "[]string"),
+			Exported: true, Pos: iat("23"), Owner: tVarLog},
+		{ID: "(" + tSliceLog + ").Log", Name: "Log", Package: storePkg, Receiver: recv("", tSliceLog), Params: ps("xs", "[]string"),
+			Exported: true, Pos: iat("27"), Owner: tSliceLog},
+		{ID: storePkg + ".makers", Name: "makers", Package: storePkg, Pos: iat("31")},
+		// Both results print as store.result: the open item on local type strings.
+		{ID: "(" + tMaker + ").Make", Name: "Make", Package: storePkg, Results: ps("", storePkg+".result"),
+			Exported: true, Pos: iat("33"), Owner: tMaker},
+		{ID: storePkg + ".others", Name: "others", Package: storePkg, Pos: iat("37")},
+		{ID: "(" + tOther + ").Make", Name: "Make", Package: storePkg, Results: ps("", storePkg+".result"),
+			Exported: true, Pos: iat("39"), Owner: tOther},
 	}
 
 	// Closures have their own test.
