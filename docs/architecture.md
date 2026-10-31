@@ -150,13 +150,13 @@ BuildCallGraph
     GenDecl  → handleGenDecl       switch on token:
                 ├ TYPE      → handleTypeSpec   Type node (types.go); struct → structFields;
                 │                              interface → embeds + addInterfaceMethod;
-                │                              collects concrete / interface objects;
+                │                              summarize: method sets by key (implementations.go);
                 │                              consts in the type expr read by the package
                 └ VAR/CONST → handleValueSpec  Variable nodes (variables.go); construct edges
                                                for vars with a value; calls and accesses in
                                                values with the package as caller
   after every package: merge the shares (nodes, edges, local type and closure IDs)
-    implementations   (types.go) method-name index → candidates → types.Implements
+    matchImplementations   (implementations.go) first-method-key index → method sets compared by key
     sort every list
 ```
 
@@ -214,8 +214,8 @@ BuildCallGraph
 - Record facts (`Implementation`) instead of "might call" edges, which would be noisy (caddy's `Module` has 137 implementations).
 - `PointerOnly` distinguishes `*T` from `T`.
 - Repo interfaces and repo concrete types only (outside interfaces: #14). Generic and empty interfaces are skipped.
-- Computed after the walk, from type-checker objects kept during it, so it stays consistent with what the walk records.
-- A method-name index (first method as key) picks candidates; `types.Implements` decides.
+- Matched after every package is built, from each package's stored method sets (see Implementations from summaries), so a cached package takes part without type-checking.
+- A first-method-key index picks candidates; the method sets decide.
 
 ### Writes (Access)
 - Purpose: who changes which state. Field roles for the MCP (config vs. live state vs. dead), ranking important vars and fields, data flow through shared state, side effects.
@@ -282,15 +282,23 @@ BuildCallGraph
 - `buildPackage(pkg, root, repo)` walks one package with a fresh builder; `BuildCallGraph` merges the results, matches implementations and sorts. The cache stores one package's share, so a share can't depend on any other package's walk.
 - What a share needs from outside is the repo's package paths (which consts are read), passed in. Closure, init and local type numbering is already per declaration or file, so a fresh builder gives the same IDs.
 - Local type IDs are merged after the walk: an implementation can pair a type and an interface from different packages, and `CallGraph.TypeID` / `FuncID` serve every package. A local type can't be named outside its function, so another package's walk never needs its ID; if it did, `typeID` gives `pkg.Name#?`.
-- Implementations stay a pass over type-checker objects for now; matching them from stored per-package summaries is the next step.
+- Implementations are matched from per-package summaries after the merge (next section).
 - Tests: each package built alone holds only nodes and edges in its own files, and the shares together are the whole graph; reversing the package order changes nothing; no `#?` IDs.
+
+### Implementations from summaries (M2a)
+- A cached package has no type-checker objects, so `types.Implements` can't run on it. Each package stores a `typeSummary` instead: its concrete types' value and pointer method sets, and its interfaces' method sets (embedded ones included), as method key → signature key. Matching reruns every time over all summaries, so a new interface in one package is matched against unchanged types in others.
+- Not `gcexportdata` plus `types.Implements`: export data holds package-level declarations only, and local types (`announce.namer`, `spawn$1.job`) take part in implementations.
+- Signature keys are equal exactly when the type checker's identity holds: param names dropped, aliases resolved, `byte` as `uint8`, `...T` kept apart from `[]T`, local types by their grepo ID (two local `result`s both print as `store.result`), and unexported method names qualified by their package (`model`'s `seal` isn't `store`'s).
+- Interfaces with type terms (`interface{ ~int; String() string }`) are left out, though `types.Implements` matches them: nothing holds a value of one, and caddy, bubbletea and lo have none with methods. Summarizing type sets isn't worth it.
+- Summaries are plain strings and maps: they're stored as they are (JSON, like the rest of a share).
+- Tests: `model/impls.go` and `store/impls.go` hold one case per rule above; matching from summaries, after a JSON round trip, must give exactly what `types.Implements` gives on the fixture (the old matcher, kept in the test as the oracle).
 
 ### Loading (M2a, planned)
 - Our own loader: `go list` metadata plus `go/types` directly, replacing `go/packages`. Dependencies are type-checked from source, not compiled.
 - Why not compiler export data (`go list -export`): it compiles dependencies with code generation the walker never uses. Cold caddy: ~34s compiling vs ~1–2s type-checking from source; downloads (~50s) are the same either way.
 - Why not `go/packages` with `NeedDeps`: it can't take cached types, so every load re-type-checks all dependencies, and it keeps syntax and `TypesInfo` for every one of them.
 - Dependencies: function bodies dropped before type-checking (dependents only need declarations); only their types are kept; errors in them are ignored (dropping bodies leaves unused imports).
-- Each package's type summary is cached (`gcexportdata`) next to its graph entry, so unchanged packages are imported from the cache and an edit re-checks only the changed package and its reverse imports.
+- Each package's export data (`gcexportdata`) is cached next to its graph entry, so unchanged packages are imported from the cache and an edit re-checks only the changed package and its reverse imports.
 - The importer decides what a missing package becomes, so the partial pass (M2c) uses the same path.
 - Given up: reusing the user's warm `go build` cache, and the Go tooling quirks `go/packages` handles (build tags, cgo files, vendor, `go.work`, overlays) that are now ours to get right through `go list`.
 - To check: memory on large repos, and per-package errors (cgo especially).
@@ -308,6 +316,7 @@ BuildCallGraph
 | #8: type arguments on generic calls | deferred to M7 |
 | Closures through locals | `inc := func(){…}; inc()` stays dynamic; the closure node exists, but nothing links the call to it |
 | #14: implementations of outside interfaces | open |
+| Constraint interfaces | interfaces with type terms get no implementations (Implementations from summaries) |
 | Aliasing through locals | `m := s.users; m[k] = v` writes into `Store.users` but gets no `content` edge; the `escape` at `m := s.users` makes the gap visible |
 | Pointer contents | `s.db.Close()`, `f(s.db)` may change what `db` points to; no edge by design (only direct writes like `s.db.x = 1` give `content`) |
 | Method summaries | whether a method changes its receiver, transitively; deferred, needs the root of each write on `Access` |

@@ -172,7 +172,7 @@ func BuildCallGraph(res *load.Result) *CallGraph {
 		ids:       idTable{},
 		closures:  map[*ast.FuncLit]string{},
 	}
-	var concrete, interfaces []*types.TypeName
+	var summaries []typeSummary
 	for _, pkg := range res.Packages {
 		b := buildPackage(pkg, res.Dir, repo)
 		g.Types = append(g.Types, b.types...)
@@ -182,11 +182,10 @@ func BuildCallGraph(res *load.Result) *CallGraph {
 		g.Accesses = append(g.Accesses, b.accesses...)
 		maps.Copy(g.ids, b.ids)
 		maps.Copy(g.closures, b.closures)
-		concrete = append(concrete, b.concrete...)
-		interfaces = append(interfaces, b.interfaces...)
+		summaries = append(summaries, b.summary)
 	}
 	// After the merge: a type and an interface it implements can be in different packages.
-	g.Implementations = implementations(concrete, interfaces, g.ids)
+	g.Implementations = matchImplementations(summaries)
 	g.sort()
 	return g
 }
@@ -275,9 +274,7 @@ type callGraphBuilder struct {
 	calls     []FunctionCall
 	accesses  []Access
 
-	// This package's types, for implementations() after the merge.
-	concrete   []*types.TypeName
-	interfaces []*types.TypeName
+	summary typeSummary // types by method set, for matchImplementations after the merge
 }
 
 // handleGenDecl dispatches a type, var or const declaration to its spec handler.

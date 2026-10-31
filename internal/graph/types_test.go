@@ -108,6 +108,28 @@ func TestCallGraphTypes(t *testing.T) {
 			fld(tCRunner, "OnDone", "func()", cat("11")),
 			fld(tCRunner, "Run", "func() error", cat("12")),
 		}},
+
+		// The implementations fixture (model/impls.go, store/impls.go).
+		{ID: tSealed, Name: "Sealed", Package: modelPkg, Kind: InterfaceType, Exported: true, Pos: "model/impls.go:8"},
+		{ID: tToken, Name: "Token", Package: modelPkg, Kind: StructType, Exported: true, Pos: "model/impls.go:10"},
+		{ID: tLookup, Name: "Lookup", Package: modelPkg, Kind: InterfaceType, Exported: true, Pos: "model/impls.go:15"},
+		{ID: tFake, Name: "Fake", Package: storePkg, Kind: StructType, Exported: true, Pos: iat("6")},
+		{ID: tSealer, Name: "Sealer", Package: storePkg, Kind: StructType, Exported: true, Pos: iat("11"),
+			Fields: []Field{emb(tSealer, "Token", tToken, iat("11"))}},
+		{ID: tFinder, Name: "Finder", Package: storePkg, Kind: StructType, Exported: true, Pos: iat("14")},
+		{ID: tLogger, Name: "Logger", Package: storePkg, Kind: InterfaceType, Exported: true, Pos: iat("19")},
+		{ID: tVarLog, Name: "varLog", Package: storePkg, Kind: StructType, Pos: iat("21")},
+		{ID: tSliceLog, Name: "sliceLog", Package: storePkg, Kind: StructType, Pos: iat("25")},
+		{ID: tMakersResult, Name: "result", Package: storePkg, Kind: StructType, Pos: iat("32")},
+		{ID: tMaker, Name: "maker", Package: storePkg, Kind: InterfaceType, Pos: iat("33")},
+		// The embedded field's type prints without its local ID: the open item on local type strings.
+		{ID: tImpl, Name: "impl", Package: storePkg, Kind: StructType, Pos: iat("34"),
+			Fields: []Field{emb(tImpl, "maker", storePkg+".maker", iat("34"))}},
+		{ID: tOthersResult, Name: "result", Package: storePkg, Kind: StructType, Pos: iat("38")},
+		{ID: tOther, Name: "other", Package: storePkg, Kind: InterfaceType, Pos: iat("39")},
+		{ID: tStringish, Name: "Stringish", Package: modelPkg, Kind: InterfaceType, Exported: true, Pos: "model/impls.go:19", Embeds: []string{"~int"}},
+		{ID: tWriter, Name: "Writer", Package: storePkg, Kind: InterfaceType, Exported: true, Pos: iat("43")},
+		{ID: tRawWriter, Name: "rawWriter", Package: storePkg, Kind: StructType, Pos: iat("45")},
 	}
 
 	checkExact(t, "type", g.Types, want, func(ty Type) string { return fmt.Sprintf("%+v", ty) })
@@ -129,6 +151,22 @@ func TestCallGraphImplementations(t *testing.T) {
 		{Type: tBadge, Interface: tLocalNamer},
 		// A local struct implements through its embedded *Store, so its value does too.
 		{Type: tJob, Interface: tGetter},
+
+		// Signatures must compare as the type checker does (model/impls.go, store/impls.go).
+		// An unexported method belongs to its package: Token and Sealer (promoted) have
+		// model's seal; Fake's seal is store's, so Fake isn't Sealed.
+		{Type: tToken, Interface: tSealed},
+		{Type: tSealer, Interface: tSealed},
+		// Param names and aliases don't matter: Find(n int) is Find(id ID).
+		{Type: tFinder, Interface: tLookup},
+		// ...string isn't []string: varLog is a Logger, sliceLog isn't.
+		{Type: tVarLog, Interface: tLogger},
+		// impl's Make returns makers' result, not others': a maker, not an other.
+		{Type: tImpl, Interface: tMaker},
+		// byte is uint8.
+		{Type: tRawWriter, Interface: tWriter},
+		// Nothing for Stringish: interfaces with type terms only constrain type
+		// params, so they're left out, though UserID is in its type set.
 		// Nothing for Any: empty interfaces are skipped.
 		// Not listed: interfaces themselves, generic List[T] (no type args to check),
 		// and interfaces outside the repo (UserID implements fmt.Stringer).

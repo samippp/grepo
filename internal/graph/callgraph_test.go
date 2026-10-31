@@ -90,6 +90,25 @@ const (
 	tCRunner   = storePkg + ".Runner"
 	idClosures = "(*" + tCRunner + ").closures"
 	idStart    = "(*" + tCRunner + ").start"
+
+	// Implementations fixture (model/impls.go, store/impls.go).
+	tSealed       = modelPkg + ".Sealed"
+	tToken        = modelPkg + ".Token"
+	tLookup       = modelPkg + ".Lookup"
+	tFake         = storePkg + ".Fake"
+	tSealer       = storePkg + ".Sealer"
+	tFinder       = storePkg + ".Finder"
+	tLogger       = storePkg + ".Logger"
+	tVarLog       = storePkg + ".varLog"
+	tSliceLog     = storePkg + ".sliceLog"
+	tMakersResult = storePkg + ".makers.result#1"
+	tMaker        = storePkg + ".makers.maker#1"
+	tImpl         = storePkg + ".makers.impl#1"
+	tOthersResult = storePkg + ".others.result#1"
+	tOther        = storePkg + ".others.other#1"
+	tStringish    = modelPkg + ".Stringish"
+	tWriter       = storePkg + ".Writer"
+	tRawWriter    = storePkg + ".rawWriter"
 )
 
 // fixtureLoad and fixtureCallGraph load and build testdata/simple once for
@@ -254,6 +273,7 @@ func TestCallGraphLocalTypesResolved(t *testing.T) {
 func rat(line string) string { return "store/reads.go:" + line }
 func wat(line string) string { return "store/writes.go:" + line }
 func cat(line string) string { return "store/closures.go:" + line }
+func iat(line string) string { return "store/impls.go:" + line }
 
 // checkExact fails for each want missing from got and each got not in want,
 // counting duplicates. Keys start with the ID, so a node with a wrong field
