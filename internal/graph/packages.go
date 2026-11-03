@@ -89,10 +89,7 @@ func BuildPackageGraph(res *load.Result) *PackageGraph {
 			pkg.Files = append(pkg.Files, rel(res.Dir, f))
 		}
 
-		// Keys are import paths as written in source; values carry the resolved
-		// path, which differs for vendored packages.
-		for _, imp := range p.Imports {
-			path := imp.PkgPath
+		for _, path := range p.Imports {
 			switch {
 			case internal[path]:
 				pkg.Imports.Internal = append(pkg.Imports.Internal, path)

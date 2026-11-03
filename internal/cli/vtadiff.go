@@ -34,14 +34,16 @@ func newVTADiffCmd(a *app) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			res, err := load.Load(ctx, repo.Dir, a.log)
+			// go/packages, not grepo's loader: SSA needs its packages, and the
+			// graph must share their objects to map SSA back onto grepo IDs.
+			res, pkgs, err := load.GoPackages(ctx, repo.Dir, a.log)
 			if err != nil {
 				return err
 			}
 			cg := graph.BuildCallGraph(res)
 
 			t := time.Now()
-			report := vtadiff.Compare(res, cg)
+			report := vtadiff.Compare(res, pkgs, cg)
 			a.log.Info("compared with VTA", "took", logging.Since(t))
 			return report.Write(cmd.OutOrStdout(), examples)
 		},
