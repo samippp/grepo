@@ -1,7 +1,6 @@
 // packages_test.go checks BuildPackageGraph against testdata/simple, a tiny
 // real module (main → store → model). The fixture is loaded through load.Load
-// rather than mocked, so this also tests the go/packages integration end to
-// end.
+// rather than mocked, so this also tests the loader end to end.
 
 package graph
 

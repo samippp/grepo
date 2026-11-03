@@ -21,6 +21,7 @@ import (
 
 	"golang.org/x/tools/go/callgraph"
 	"golang.org/x/tools/go/callgraph/vta"
+	"golang.org/x/tools/go/packages"
 	"golang.org/x/tools/go/ssa"
 	"golang.org/x/tools/go/ssa/ssautil"
 
@@ -53,8 +54,8 @@ type edge struct {
 
 // Compare builds VTA's call graph from the same loaded packages as cg and
 // reports the differences.
-func Compare(res *load.Result, cg *graph.CallGraph) *Report {
-	tr := newTranslator(res, cg)
+func Compare(res *load.Result, pkgs []*packages.Package, cg *graph.CallGraph) *Report {
+	tr := newTranslator(res, pkgs, cg)
 	theirs, expected := tr.vtaEdges()
 
 	r := &Report{Module: res.Module, Ours: len(cg.Calls), Theirs: len(theirs), Expected: expected}
@@ -221,7 +222,8 @@ func (c *Category) add(format string, args ...any) {
 // translator maps VTA's SSA functions onto grepo's IDs.
 type translator struct {
 	res        *load.Result
-	cg         *graph.CallGraph // for its ID functions
+	pkgs       []*packages.Package // the same packages, for SSA
+	cg         *graph.CallGraph    // for its ID functions
 	fset       *token.FileSet
 	roots      map[string]bool   // repo package paths
 	initByPos  map[string]string // "file:line" → grepo ID, for init functions
@@ -230,9 +232,10 @@ type translator struct {
 	implements map[string]bool // "type|interface"
 }
 
-func newTranslator(res *load.Result, cg *graph.CallGraph) *translator {
+func newTranslator(res *load.Result, pkgs []*packages.Package, cg *graph.CallGraph) *translator {
 	t := &translator{
 		res:        res,
+		pkgs:       pkgs,
 		cg:         cg,
 		roots:      map[string]bool{},
 		initByPos:  map[string]string{},
@@ -262,7 +265,7 @@ func newTranslator(res *load.Result, cg *graph.CallGraph) *translator {
 // vtaEdges builds VTA's call graph and returns its edges from repo code,
 // translated into grepo's IDs, plus counts of edges skipped as expected.
 func (t *translator) vtaEdges() ([]edge, map[string]int) {
-	prog, _ := ssautil.Packages(t.res.Packages, ssa.InstantiateGenerics)
+	prog, _ := ssautil.Packages(t.pkgs, ssa.InstantiateGenerics)
 	prog.Build()
 	cg := vta.CallGraph(ssautil.AllFunctions(prog), nil)
 

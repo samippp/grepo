@@ -1,9 +1,9 @@
 // Package load is grepo's only point of contact with the Go toolchain.
 //
-// It wraps golang.org/x/tools/go/packages, which runs `go list` inside the
-// target repo, so grepo sees the code exactly as `go build` would: the same
-// go.mod, dependency versions and build tags. Every later stage (the package and
-// call graphs now, data-flow analysis later) consumes the Result from here.
+// It runs `go list` inside the target repo, so grepo sees the code exactly as
+// `go build` would: the same go.mod, dependency versions and build tags. Every
+// later stage (the package and call graphs now, data-flow analysis later)
+// consumes the Result from here, never go/packages directly.
 //
 // What the target repo needs: it must be a Go module whose dependencies can
 // be downloaded. Limitations: only files for the current GOOS/GOARCH are
@@ -11,13 +11,21 @@
 //
 // Each package comes back with its parsed syntax trees and type information,
 // which the graph package walks to build the call graph.
+//
+// Load still goes through golang.org/x/tools/go/packages; grepo's own loader
+// (M2a) replaces its internals. GoPackages stays for vta-diff, which builds
+// SSA from go/packages.
 package load
 
 import (
 	"context"
 	"fmt"
+	"go/ast"
+	"go/token"
+	"go/types"
 	"log/slog"
 	"path/filepath"
+	"slices"
 	"time"
 
 	"golang.org/x/tools/go/packages"
@@ -29,7 +37,22 @@ import (
 type Result struct {
 	Dir      string // absolute path to the repository root
 	Module   string // main module path, empty if none was found
-	Packages []*packages.Package
+	Packages []*Package
+}
+
+// Package is one of the repo's packages, type-checked.
+type Package struct {
+	PkgPath string
+	Name    string
+	Dir     string
+	GoFiles []string
+	Imports []string // resolved import paths: vendored ones differ from the source
+	Errors  []error
+
+	Fset      *token.FileSet // shared by every package in the Result
+	Syntax    []*ast.File
+	Types     *types.Package
+	TypesInfo *types.Info
 }
 
 // Names, files and imports feed the package graph. Syntax (the parsed trees in
@@ -43,9 +66,17 @@ const mode = packages.NeedName | packages.NeedFiles | packages.NeedImports | pac
 // Packages that fail to load are logged as warnings and still returned, with
 // their Errors field set.
 func Load(ctx context.Context, dir string, log *slog.Logger) (*Result, error) {
+	res, _, err := GoPackages(ctx, dir, log)
+	return res, err
+}
+
+// GoPackages loads like Load, through go/packages, and also returns its
+// packages. They share syntax and type objects with the Result's, so SSA built
+// from them maps back onto a graph built from the Result (vta-diff).
+func GoPackages(ctx context.Context, dir string, log *slog.Logger) (*Result, []*packages.Package, error) {
 	abs, err := filepath.Abs(dir)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	// The first load of a repo also downloads its dependencies, which is
@@ -55,13 +86,13 @@ func Load(ctx context.Context, dir string, log *slog.Logger) (*Result, error) {
 	cfg := &packages.Config{Context: ctx, Mode: mode, Dir: abs}
 	pkgs, err := packages.Load(cfg, "./...")
 	if err != nil {
-		return nil, fmt.Errorf("loading packages in %s: %w", abs, err)
+		return nil, nil, fmt.Errorf("loading packages in %s: %w", abs, err)
 	}
 	if len(pkgs) == 0 {
-		return nil, fmt.Errorf("no Go packages found in %s", abs)
+		return nil, nil, fmt.Errorf("no Go packages found in %s", abs)
 	}
 
-	res := &Result{Dir: abs, Packages: pkgs}
+	res := &Result{Dir: abs}
 	for _, p := range pkgs {
 		if res.Module == "" && p.Module != nil && p.Module.Main {
 			res.Module = p.Module.Path
@@ -69,7 +100,32 @@ func Load(ctx context.Context, dir string, log *slog.Logger) (*Result, error) {
 		for _, e := range p.Errors {
 			log.Warn("package has errors", "package", p.PkgPath, "err", e.Error())
 		}
+		res.Packages = append(res.Packages, wrap(p))
 	}
 	log.Info("loaded packages", "module", res.Module, "count", len(pkgs), "took", logging.Since(start))
-	return res, nil
+	return res, pkgs, nil
+}
+
+// wrap copies what grepo uses from a go/packages package, sharing its syntax
+// and type objects.
+func wrap(p *packages.Package) *Package {
+	pkg := &Package{
+		PkgPath:   p.PkgPath,
+		Name:      p.Name,
+		Dir:       p.Dir,
+		GoFiles:   p.GoFiles,
+		Fset:      p.Fset,
+		Syntax:    p.Syntax,
+		Types:     p.Types,
+		TypesInfo: p.TypesInfo,
+	}
+	// Keys are import paths as written in source; values carry the resolved path.
+	for _, imp := range p.Imports {
+		pkg.Imports = append(pkg.Imports, imp.PkgPath)
+	}
+	slices.Sort(pkg.Imports)
+	for _, e := range p.Errors {
+		pkg.Errors = append(pkg.Errors, e)
+	}
+	return pkg
 }

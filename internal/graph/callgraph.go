@@ -9,8 +9,6 @@ import (
 	"slices"
 	"strconv"
 
-	"golang.org/x/tools/go/packages"
-
 	"github.com/samippp/grepo/internal/load"
 )
 
@@ -193,7 +191,7 @@ func BuildCallGraph(res *load.Result) *CallGraph {
 // buildPackage walks one package. Its output depends only on pkg, the repo
 // root and the repo's package paths, so packages can be built in any order
 // (and cached).
-func buildPackage(pkg *packages.Package, root string, repo map[string]bool) *callGraphBuilder {
+func buildPackage(pkg *load.Package, root string, repo map[string]bool) *callGraphBuilder {
 	b := &callGraphBuilder{
 		root:       root,
 		pkg:        pkg,
@@ -254,8 +252,8 @@ func (g *CallGraph) sort() {
 
 // callGraphBuilder holds one package's walk context and results.
 type callGraphBuilder struct {
-	root string            // repo root
-	pkg  *packages.Package // current package
+	root string        // repo root
+	pkg  *load.Package // current package
 
 	inits      map[string]int           // init funcs seen per file, for unique init IDs
 	ids        idTable                  // local type IDs, filled during the walk
