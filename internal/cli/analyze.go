@@ -27,7 +27,7 @@ import (
 )
 
 func newAnalyzeCmd(a *app) *cobra.Command {
-	var out string
+	var out, loader string
 
 	cmd := &cobra.Command{
 		Use:   "analyze [github-link | path]",
@@ -53,7 +53,12 @@ func newAnalyzeCmd(a *app) *cobra.Command {
 				log = log.With("repo", repo.URL)
 			}
 
-			res, err := load.Load(ctx, repo.Dir, log)
+			var res *load.Result
+			if loader == "packages" { // the go/packages path, for comparing loaders
+				res, _, err = load.GoPackages(ctx, repo.Dir, log)
+			} else {
+				res, err = load.Load(ctx, repo.Dir, log)
+			}
 			if err != nil {
 				return err
 			}
@@ -104,6 +109,8 @@ func newAnalyzeCmd(a *app) *cobra.Command {
 	}
 
 	cmd.Flags().StringVarP(&out, "out", "o", "", "write JSON to this file instead of stdout")
+	cmd.Flags().StringVar(&loader, "loader", "", `dev: "packages" loads through go/packages instead`)
+	_ = cmd.Flags().MarkHidden("loader")
 	return cmd
 }
 

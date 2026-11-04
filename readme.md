@@ -49,7 +49,7 @@ cmd/grepo/         CLI entry point
 internal/cli/      cobra commands
 internal/logging/  slog setup shared by the CLI and (later) the server
 internal/source/   GitHub link or local path → directory on disk
-internal/load/     loads packages via golang.org/x/tools/go/packages
+internal/load/     go list + go/types: packages, syntax and types
 internal/graph/    builds graphs from loaded packages
 internal/vtadiff/  dev tool: compares the call graph with x/tools' VTA
 ```
