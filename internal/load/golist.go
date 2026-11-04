@@ -4,6 +4,7 @@
 package load
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -65,11 +66,9 @@ func fromGoList(ctx context.Context, dir string, log *slog.Logger) (*Result, err
 		return nil, err
 	}
 
-	// The first load of a repo also downloads its dependencies, which is
-	// usually most of the time spent here.
 	start := time.Now()
 	log.Debug("listing packages", "dir", abs)
-	list, err := goList(ctx, abs)
+	list, err := goList(ctx, abs, log)
 	if err != nil {
 		return nil, err
 	}
@@ -115,13 +114,41 @@ func fromGoList(ctx context.Context, dir string, log *slog.Logger) (*Result, err
 // goList runs `go list` on every package under dir and its dependencies.
 // -e reports broken packages instead of failing; no -compiled, so cgo files
 // are type-checked as written and no C compiler is needed.
-func goList(ctx context.Context, dir string) ([]*listed, error) {
+//
+// On a repo's first load, go list also downloads its dependencies, which can
+// take a while (caddy: 160 modules, 11s). It says so on stderr, line by line;
+// we log the first, since a silent wait looks hung, and count the rest.
+func goList(ctx context.Context, dir string, log *slog.Logger) ([]*listed, error) {
 	cmd := exec.CommandContext(ctx, "go", "list", "-e", "-deps", "-json="+listFields, "--", "./...")
 	cmd.Dir = dir
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout, cmd.Stderr = &stdout, &stderr
-	if err := cmd.Run(); err != nil {
+	var stdout bytes.Buffer
+	cmd.Stdout = &stdout
+	pipe, err := cmd.StderrPipe()
+	if err != nil {
+		return nil, err
+	}
+	if err := cmd.Start(); err != nil {
+		return nil, fmt.Errorf("go list in %s: %w", dir, err)
+	}
+	var stderr strings.Builder
+	var downloads int
+	var downloadStart time.Time
+	for sc := bufio.NewScanner(pipe); sc.Scan(); {
+		stderr.WriteString(sc.Text() + "\n")
+		if mod, ok := strings.CutPrefix(sc.Text(), "go: downloading "); ok {
+			if downloads == 0 {
+				downloadStart = time.Now()
+				log.Info("downloading dependencies (first run on this repo)")
+			}
+			downloads++
+			log.Debug("downloading", "module", mod)
+		}
+	}
+	if err := cmd.Wait(); err != nil {
 		return nil, fmt.Errorf("go list in %s: %w: %s", dir, err, strings.TrimSpace(stderr.String()))
+	}
+	if downloads > 0 {
+		log.Info("downloaded dependencies", "modules", downloads, "took", logging.Since(downloadStart))
 	}
 	var list []*listed
 	for dec := json.NewDecoder(&stdout); ; {
