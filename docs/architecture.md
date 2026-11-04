@@ -293,7 +293,7 @@ BuildCallGraph
 - Summaries are plain strings and maps: they're stored as they are (JSON, like the rest of a share).
 - Tests: `model/impls.go` and `store/impls.go` hold one case per rule above; matching from summaries, after a JSON round trip, must give exactly what `types.Implements` gives on the fixture (the old matcher, kept in the test as the oracle).
 
-### Loading (M2a, planned)
+### Loading (M2a)
 - Our own loader: `go list` metadata plus `go/types` directly, replacing `go/packages`. Dependencies are type-checked from source, not compiled.
 - Why not compiler export data (`go list -export`): it compiles dependencies with code generation the walker never uses. Cold caddy: ~34s compiling vs ~1–2s type-checking from source; downloads (~50s) are the same either way.
 - Why not `go/packages` with `NeedDeps`: it can't take cached types, so every load re-type-checks all dependencies, and it keeps syntax and `TypesInfo` for every one of them.
@@ -306,7 +306,11 @@ BuildCallGraph
 - `go list -json -deps -e ./...`, no `-compiled`: cgo files are type-checked as written with a fake `"C"` (`types.Config.FakeImportC`), so no C compiler is needed and positions stay in real files. In caddy, bubbletea and lo, cgo is only in stdlib dependencies, whose bodies and errors are dropped.
 - Matched to `go/packages`: absolute file paths (positions), sizes from the target's `GOARCH` (`unsafe.Sizeof` consts end up in the output), and each module's `go` version (which language features type-check).
 - Not matched: `go/packages` adds the compiler's output as one more error on a broken package, repeating its type errors. We don't compile, so it's gone.
-- Tests: `internal/load/testdata/mod` adds what `testdata/simple` lacks (a dependency outside the module through `replace`, a build-tagged file, a test file, `unsafe` sizes, `go 1.21` with a go1.22 feature, type errors). On both fixtures, the loader must describe exactly as `go/packages` does: packages, files, imports, errors, scope, file versions, and every `Defs`, `Uses`, `Implicits`, `Selections`, `Instances`, `Types` and `Scopes` entry, by position.
+- Stdlib files are parsed under the name `$GOROOT/src/...`, as compiler export data names them: a field of `type T tls.ConnectionState` sits at `$GOROOT/src/crypto/tls/common.go:254`, whatever the install path.
+- A package is parsed only once its imports are checked, one per core: only the packages in progress hold syntax trees (caddy peaked at 778 MB when every package parsed up front).
+- Measured (`analyze`, same output both ways): empty build cache, caddy 3.7s / 355 MB vs `go/packages` 32.9s / 369 MB; bubbletea 0.7s vs 6.3s; lo 0.7s vs 4.1s. Warm, `go/packages` reads compiled export data and is a little ahead (caddy 1.1s / 226 MB vs 1.3s / 358 MB); cached export data (step 4) covers that case.
+- `analyze --loader=packages` (hidden) loads through `go/packages`, for comparing the two on new repos.
+- Tests: `TestStdlibPositions` pins the `$GOROOT` naming for both loaders. `internal/load/testdata/mod` adds what `testdata/simple` lacks (a dependency outside the module through `replace`, a build-tagged file, a test file, `unsafe` sizes, `go 1.21` with a go1.22 feature, type errors). On both fixtures, the loader must describe exactly as `go/packages` does: packages, files, imports, errors, scope, file versions, and every `Defs`, `Uses`, `Implicits`, `Selections`, `Instances`, `Types` and `Scopes` entry, by position.
 
 ### Process
 - Fixture-first: failing tests before implementation; fixture additions are appended so existing line numbers don't move.

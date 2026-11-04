@@ -12,9 +12,9 @@
 // Each package comes back with its parsed syntax trees and type information,
 // which the graph package walks to build the call graph.
 //
-// Load still goes through golang.org/x/tools/go/packages; grepo's own loader
-// (M2a) replaces its internals. GoPackages stays for vta-diff, which builds
-// SSA from go/packages.
+// Load is grepo's own loader (golist.go). GoPackages loads the same through
+// golang.org/x/tools/go/packages, for vta-diff, which builds SSA from it, and
+// for comparing the two.
 package load
 
 import (
@@ -55,10 +55,8 @@ type Package struct {
 	TypesInfo *types.Info
 }
 
-// Names, files and imports feed the package graph. Syntax (the parsed trees in
-// Package.Syntax) and types (Package.Types, Package.TypesInfo) feed the call
-// graph. Type-checking is the slow part: dependencies have to be compiled so
-// their types are known.
+// GoPackages' load mode. Its dependencies' types come from compiled export
+// data: slow on a cold build cache, which is why Load doesn't use it.
 const mode = packages.NeedName | packages.NeedFiles | packages.NeedImports | packages.NeedModule |
 	packages.NeedSyntax | packages.NeedTypes | packages.NeedTypesInfo
 
@@ -66,8 +64,7 @@ const mode = packages.NeedName | packages.NeedFiles | packages.NeedImports | pac
 // Packages that fail to load are logged as warnings and still returned, with
 // their Errors field set.
 func Load(ctx context.Context, dir string, log *slog.Logger) (*Result, error) {
-	res, _, err := GoPackages(ctx, dir, log)
-	return res, err
+	return fromGoList(ctx, dir, log)
 }
 
 // GoPackages loads like Load, through go/packages, and also returns its

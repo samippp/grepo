@@ -44,6 +44,28 @@ func TestFromGoListMatchesGoPackages(t *testing.T) {
 	}
 }
 
+// Stdlib positions read $GOROOT/src/..., as in compiler export data, whatever
+// the install path: a type defined from a stdlib struct shows its fields'.
+func TestStdlibPositions(t *testing.T) {
+	log := slog.New(slog.DiscardHandler)
+	viaPackages, _, err := GoPackages(t.Context(), "testdata/mod", log)
+	if err != nil {
+		t.Fatal(err)
+	}
+	own, err := fromGoList(t.Context(), "testdata/mod", log)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, res := range map[string]*Result{"go/packages": viaPackages, "fromGoList": own} {
+		p := res.Packages[slices.IndexFunc(res.Packages, func(p *Package) bool { return p.PkgPath == "example.com/loadfix" })]
+		i := slices.IndexFunc(p.Types.Imports(), func(imp *types.Package) bool { return imp.Path() == "fmt" })
+		println := p.Types.Imports()[i].Scope().Lookup("Println")
+		if file := p.Fset.Position(println.Pos()).Filename; file != "$GOROOT/src/fmt/print.go" {
+			t.Errorf("%s: fmt.Println in %s, want $GOROOT/src/fmt/print.go", name, file)
+		}
+	}
+}
+
 // describe renders a Result one fact per line, positions relative to its
 // root. Objects declared outside the repo print without a position: export
 // data and source needn't agree on columns there.
