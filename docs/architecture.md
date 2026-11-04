@@ -302,6 +302,11 @@ BuildCallGraph
 - The importer decides what a missing package becomes, so the partial pass (M2c) uses the same path.
 - Given up: reusing the user's warm `go build` cache, and the Go tooling quirks `go/packages` handles (build tags, cgo files, vendor, `go.work`, overlays) that are now ours to get right through `go list`.
 - To check: memory on large repos, and per-package errors (cgo especially).
+- `graph` reads `load.Package`, never `go/packages` (#31). `vta-diff` stays on `go/packages` through `load.GoPackages`, as an independent check.
+- `go list -json -deps -e ./...`, no `-compiled`: cgo files are type-checked as written with a fake `"C"` (`types.Config.FakeImportC`), so no C compiler is needed and positions stay in real files. In caddy, bubbletea and lo, cgo is only in stdlib dependencies, whose bodies and errors are dropped.
+- Matched to `go/packages`: absolute file paths (positions), sizes from the target's `GOARCH` (`unsafe.Sizeof` consts end up in the output), and each module's `go` version (which language features type-check).
+- Not matched: `go/packages` adds the compiler's output as one more error on a broken package, repeating its type errors. We don't compile, so it's gone.
+- Tests: `internal/load/testdata/mod` adds what `testdata/simple` lacks (a dependency outside the module through `replace`, a build-tagged file, a test file, `unsafe` sizes, `go 1.21` with a go1.22 feature, type errors). On both fixtures, the loader must describe exactly as `go/packages` does: packages, files, imports, errors, scope, file versions, and every `Defs`, `Uses`, `Implicits`, `Selections`, `Instances`, `Types` and `Scopes` entry, by position.
 
 ### Process
 - Fixture-first: failing tests before implementation; fixture additions are appended so existing line numbers don't move.
