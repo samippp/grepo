@@ -27,6 +27,7 @@ import (
 	"time"
 
 	"github.com/samippp/grepo/internal/logging"
+	"github.com/samippp/grepo/internal/store"
 )
 
 // listed is one package from `go list -json`, with the fields we use.
@@ -38,14 +39,19 @@ type listed struct {
 	CgoFiles   []string
 	Imports    []string          // resolved: vendored paths differ from the source
 	ImportMap  map[string]string // source path → resolved, when they differ
-	Module     *struct {
-		Path      string
-		Main      bool
-		GoVersion string
-	}
-	Standard bool // in the Go distribution
+	Module     *listedModule
+	Standard   bool // in the Go distribution
 	DepOnly  bool // a dependency, not matched by ./...
 	Error    *struct{ Pos, Err string }
+}
+
+// listedModule is a package's module, as go list reports it.
+type listedModule struct {
+	Path      string
+	Version   string
+	Replace   *listedModule // what it's replaced with, if anything
+	Main      bool
+	GoVersion string
 }
 
 const listFields = "ImportPath,Name,Dir,GoFiles,CgoFiles,Imports,ImportMap,Module,Standard,DepOnly,Error"
@@ -60,7 +66,7 @@ type loader struct {
 }
 
 // fromGoList loads like GoPackages, without go/packages.
-func fromGoList(ctx context.Context, dir string, log *slog.Logger) (*Result, error) {
+func fromGoList(ctx context.Context, dir string, st *store.Store, log *slog.Logger) (*Result, error) {
 	abs, err := filepath.Abs(dir)
 	if err != nil {
 		return nil, err

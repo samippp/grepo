@@ -57,7 +57,7 @@ func newAnalyzeCmd(a *app) *cobra.Command {
 			if loader == "packages" { // the go/packages path, for comparing loaders
 				res, _, err = load.GoPackages(ctx, repo.Dir, log)
 			} else {
-				res, err = load.Load(ctx, repo.Dir, log)
+				res, err = load.Load(ctx, repo.Dir, nil, log)
 			}
 			if err != nil {
 				return err

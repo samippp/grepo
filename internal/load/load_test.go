@@ -27,7 +27,7 @@ func TestFromGoListMatchesGoPackages(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			got, err := fromGoList(t.Context(), dir, log)
+			got, err := fromGoList(t.Context(), dir, nil, log)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -52,7 +52,7 @@ func TestStdlibPositions(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	own, err := fromGoList(t.Context(), "testdata/mod", log)
+	own, err := fromGoList(t.Context(), "testdata/mod", nil, log)
 	if err != nil {
 		t.Fatal(err)
 	}

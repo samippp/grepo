@@ -31,6 +31,7 @@ import (
 	"golang.org/x/tools/go/packages"
 
 	"github.com/samippp/grepo/internal/logging"
+	"github.com/samippp/grepo/internal/store"
 )
 
 // Result is a loaded repository.
@@ -38,6 +39,7 @@ type Result struct {
 	Dir      string // absolute path to the repository root
 	Module   string // main module path, empty if none was found
 	Packages []*Package
+	Checked  []string // import paths type-checked from source, sorted; the rest came from the store
 }
 
 // Package is one of the repo's packages, type-checked.
@@ -62,9 +64,11 @@ const mode = packages.NeedName | packages.NeedFiles | packages.NeedImports | pac
 
 // Load loads every package under dir (the equivalent of `go list ./...`).
 // Packages that fail to load are logged as warnings and still returned, with
-// their Errors field set.
-func Load(ctx context.Context, dir string, log *slog.Logger) (*Result, error) {
-	return fromGoList(ctx, dir, log)
+// their Errors field set. With a store, dependencies unchanged since an
+// earlier load come from it instead of being type-checked; nil loads
+// everything from source.
+func Load(ctx context.Context, dir string, st *store.Store, log *slog.Logger) (*Result, error) {
+	return fromGoList(ctx, dir, st, log)
 }
 
 // GoPackages loads like Load, through go/packages, and also returns its
