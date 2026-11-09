@@ -175,8 +175,8 @@ func TestCallGraphIsSorted(t *testing.T) {
 	}
 }
 
-// Each package's share of the graph depends only on that package and the
-// repo's package paths. Built alone, it holds only nodes and edges in its own
+// Each package's share of the graph depends only on that package and which of
+// it and its imports are repo packages. Built alone, it holds only nodes and edges in its own
 // files, and the shares together are the whole graph. Implementations are
 // matched across packages afterwards, so they're not in any share.
 func TestBuildPackage(t *testing.T) {
@@ -193,7 +193,7 @@ func TestBuildPackage(t *testing.T) {
 	var calls []FunctionCall
 	var accesses []Access
 	for _, pkg := range res.Packages {
-		b := buildPackage(pkg, res.Dir, repo)
+		b := buildPackage(pkg, res.Dir, repoImports(pkg, repo))
 
 		dir, err := filepath.Rel(res.Dir, filepath.Dir(pkg.GoFiles[0]))
 		if err != nil {
@@ -233,6 +233,31 @@ func TestBuildPackage(t *testing.T) {
 	checkExact(t, "function", functions, g.Functions, formatFunction)
 	checkExact(t, "call", calls, g.Calls, formatCall)
 	checkExact(t, "access", accesses, g.Accesses, formatAccess)
+}
+
+// A package's share is the same whether its walk sees every repo package
+// path or only its own repo imports (repoImports). Its cache key holds only
+// its imports' keys, so a walk that looked further would be served stale.
+func TestBuildPackageSeesOnlyItsImports(t *testing.T) {
+	res := loadFixture(t)
+	repo := map[string]bool{}
+	for _, pkg := range res.Packages {
+		repo[pkg.PkgPath] = true
+	}
+	share := func(b *callGraphBuilder) []byte {
+		out, err := json.Marshal([]any{b.types, b.variables, b.functions, b.calls, b.accesses, b.summary})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return out
+	}
+	for _, pkg := range res.Packages {
+		full := share(buildPackage(pkg, res.Dir, repo))
+		narrow := share(buildPackage(pkg, res.Dir, repoImports(pkg, repo)))
+		if !bytes.Equal(full, narrow) {
+			t.Errorf("%s: its share changes when its walk sees only its own repo imports", pkg.PkgPath)
+		}
+	}
 }
 
 // The graph doesn't depend on the order packages are built in: cached ones

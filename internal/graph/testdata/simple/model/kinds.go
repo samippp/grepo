@@ -31,3 +31,6 @@ type Badge struct{ Label }
 
 // Every type implements an empty interface, so it gets no implementations.
 type Any interface{}
+
+// MaxTag is read from store: a repo const in another package.
+const MaxTag = 8

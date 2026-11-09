@@ -47,6 +47,7 @@ func TestCallGraphVariables(t *testing.T) {
 		{ID: storePkg + ".hooks", Name: "hooks", Package: storePkg, Type: "func()", Pos: cat("49")},
 		{ID: storePkg + ".fallback", Name: "fallback", Package: storePkg, Type: "func()", Pos: cat("49")},
 		{ID: storePkg + ".nested", Name: "nested", Package: storePkg, Type: "func()", Pos: cat("53")},
+		{ID: modelPkg + ".MaxTag", Name: "MaxTag", Package: modelPkg, Type: "untyped int", Const: true, Value: "8", Exported: true, Pos: "model/kinds.go:36"},
 	}
 
 	checkExact(t, "variable", g.Variables, want, func(v Variable) string { return fmt.Sprintf("%+v", v) })

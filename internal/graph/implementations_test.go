@@ -21,7 +21,7 @@ func TestImplementationsFromSummaries(t *testing.T) {
 	var concrete, interfaces []*types.TypeName
 	ids := idTable{}
 	for _, pkg := range res.Packages {
-		b := buildPackage(pkg, res.Dir, repo)
+		b := buildPackage(pkg, res.Dir, repoImports(pkg, repo))
 		summaries = append(summaries, b.summary)
 		maps.Copy(ids, b.ids)
 
