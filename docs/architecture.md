@@ -280,10 +280,10 @@ BuildCallGraph
 
 ### Per-package building (M2a)
 - `buildPackage(pkg, root, repo)` walks one package with a fresh builder; `BuildCallGraph` merges the results, matches implementations and sorts. The cache stores one package's share, so a share can't depend on any other package's walk.
-- What a share needs from outside is the repo's package paths (which consts are read), passed in. Closure, init and local type numbering is already per declaration or file, so a fresh builder gives the same IDs.
+- What a share needs from outside is which of the package and its imports are repo packages (which consts are read), passed in as `repoImports`. A const is read only where it's named, so it's declared in the package or one it imports: a cache key built from its imports' keys covers it. The walk gets only that set, not every repo path, so it can't come to depend on more. Closure, init and local type numbering is already per declaration or file, so a fresh builder gives the same IDs.
 - Local type IDs are merged after the walk: an implementation can pair a type and an interface from different packages, and `CallGraph.TypeID` / `FuncID` serve every package. A local type can't be named outside its function, so another package's walk never needs its ID; if it did, `typeID` gives `pkg.Name#?`.
 - Implementations are matched from per-package summaries after the merge (next section).
-- Tests: each package built alone holds only nodes and edges in its own files, and the shares together are the whole graph; reversing the package order changes nothing; no `#?` IDs.
+- Tests: each package built alone holds only nodes and edges in its own files, and the shares together are the whole graph; reversing the package order changes nothing; no `#?` IDs; a package's share is the same with every repo path as with only `repoImports` (`store/consts.go` reads `model.MaxTag`).
 
 ### Implementations from summaries (M2a)
 - A cached package has no type-checker objects, so `types.Implements` can't run on it. Each package stores a `typeSummary` instead: its concrete types' value and pointer method sets, and its interfaces' method sets (embedded ones included), as method key → signature key. Matching reruns every time over all summaries, so a new interface in one package is matched against unchanged types in others.

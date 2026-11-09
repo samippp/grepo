@@ -133,11 +133,14 @@ func TestCallGraphReads(t *testing.T) {
 		r(storePkg+".sized$1", maxUsers, "159"), // the closure's own signature
 		r(storePkg+".sized", maxUsers, "161"),
 		r(storePkg, maxUsers, "164"),
+
+		// A repo const from another package (store/consts.go): read too.
+		{Accessor: storePkg + ".tagLimit", Target: modelPkg + ".MaxTag", Pos: "store/consts.go:6", Kind: ReadAccess},
 	}
 
 	var got []Access
 	for _, a := range g.Accesses {
-		if (a.Kind == ReadAccess || a.Kind == EscapeAccess) && strings.HasPrefix(a.Pos, "store/reads.go:") {
+		if (a.Kind == ReadAccess || a.Kind == EscapeAccess) && (strings.HasPrefix(a.Pos, "store/reads.go:") || strings.HasPrefix(a.Pos, "store/consts.go:")) {
 			got = append(got, a)
 		}
 	}

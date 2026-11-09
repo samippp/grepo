@@ -172,7 +172,7 @@ func BuildCallGraph(res *load.Result) *CallGraph {
 	}
 	var summaries []typeSummary
 	for _, pkg := range res.Packages {
-		b := buildPackage(pkg, res.Dir, repo)
+		b := buildPackage(pkg, res.Dir, repoImports(pkg, repo))
 		g.Types = append(g.Types, b.types...)
 		g.Variables = append(g.Variables, b.variables...)
 		g.Functions = append(g.Functions, b.functions...)
@@ -189,8 +189,9 @@ func BuildCallGraph(res *load.Result) *CallGraph {
 }
 
 // buildPackage walks one package. Its output depends only on pkg, the repo
-// root and the repo's package paths, so packages can be built in any order
-// (and cached).
+// root and which of pkg and its imports are repo packages (repoImports), so
+// packages can be built in any order, and a package's cache key needs only
+// its own imports' keys.
 func buildPackage(pkg *load.Package, root string, repo map[string]bool) *callGraphBuilder {
 	b := &callGraphBuilder{
 		root:       root,
@@ -250,6 +251,19 @@ func (g *CallGraph) sort() {
 	})
 }
 
+// repoImports is the part of the repo's package paths pkg's walk can see:
+// pkg itself and its imports that are repo packages. A const can only be
+// read where it's named, so it's declared in pkg or in a package pkg imports.
+func repoImports(pkg *load.Package, repo map[string]bool) map[string]bool {
+	seen := map[string]bool{pkg.PkgPath: true}
+	for _, imp := range pkg.Imports {
+		if repo[imp] {
+			seen[imp] = true
+		}
+	}
+	return seen
+}
+
 // callGraphBuilder holds one package's walk context and results.
 type callGraphBuilder struct {
 	root string        // repo root
@@ -258,7 +272,7 @@ type callGraphBuilder struct {
 	inits      map[string]int           // init funcs seen per file, for unique init IDs
 	ids        idTable                  // local type IDs, filled during the walk
 	localCount map[string]int           // local types seen per "parent.name", for unique IDs
-	repo       map[string]bool          // the repo's package paths: their consts are read
+	repo       map[string]bool          // pkg and its repo imports (repoImports): their consts are read
 	suppressed map[ast.Expr]bool        // update right sides walk won't read: x = x + 1
 	stmt       map[*ast.CallExpr]string // "go" / "defer" for those statements' calls
 
