@@ -306,7 +306,7 @@ func (c *check) run(ld *loader) {
 	ld.checked = append(ld.checked, c.lp.ImportPath)
 	ld.mu.Unlock()
 	if ld.cache != nil {
-		ld.cache.checked(c.key, tpkg, ld.fset, cacheable)
+		ld.cache.checked(c.key, tpkg, ld.fset, cacheable && !borrowsMethods(tpkg))
 	}
 
 	if repo {

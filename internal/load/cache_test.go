@@ -67,10 +67,15 @@ func repoPaths(res *Result) []string {
 	return paths
 }
 
-// checkChecked fails unless res type-checked exactly its repo packages and extra.
+// uncached is testdata/mod's dependency that's never cached: it defines
+// interfaces from other named interfaces (borrowsMethods).
+const uncached = "example.com/dep/named"
+
+// checkChecked fails unless res type-checked exactly its repo packages,
+// uncached and extra.
 func checkChecked(t *testing.T, res *Result, extra ...string) {
 	t.Helper()
-	want := slices.Sorted(slices.Values(append(repoPaths(res), extra...)))
+	want := slices.Sorted(slices.Values(append(append(repoPaths(res), uncached), extra...)))
 	if !slices.Equal(res.Checked, want) {
 		t.Errorf("checked %v\nwant %v", res.Checked, want)
 	}
@@ -139,18 +144,18 @@ func TestCachedLoadAfterEdits(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
 		edit    func(t *testing.T, dir string)
-		recheck []string // dependencies the edit changes
+		recheck []string // dependencies the edit changes, besides uncached
 	}{
 		{"dep body", func(t *testing.T, dir string) {
 			edit(t, filepath.Join(dir, "dep/dep.go"), `p.Prefix + " " + name`, `p.Prefix + ": " + name`)
-		}, []string{"example.com/dep"}},
+		}, []string{"example.com/dep", "example.com/dep/wrap"}},
 		{"dep signature", func(t *testing.T, dir string) {
 			edit(t, filepath.Join(dir, "dep/dep.go"), "func (b Box[T]) Get() T { return b.V }",
 				"func (b Box[T]) Get() T { return b.V }\n\nfunc (b Box[T]) Set(v T) Box[T] { b.V = v; return b }")
-		}, []string{"example.com/dep"}},
+		}, []string{"example.com/dep", "example.com/dep/wrap"}},
 		{"dep go version", func(t *testing.T, dir string) {
 			edit(t, filepath.Join(dir, "dep/go.mod"), "go 1.21", "go 1.20") // lower: a higher one needs the main module's raised
-		}, []string{"example.com/dep"}},
+		}, []string{"example.com/dep", "example.com/dep/wrap"}},
 		{"moved replace", func(t *testing.T, dir string) {
 			if err := os.MkdirAll(filepath.Join(dir, "third_party"), 0o755); err != nil {
 				t.Fatal(err)
@@ -159,7 +164,7 @@ func TestCachedLoadAfterEdits(t *testing.T) {
 				t.Fatal(err)
 			}
 			edit(t, filepath.Join(dir, "go.mod"), "=> ./dep", "=> ./third_party/dep")
-		}, []string{"example.com/dep"}},
+		}, []string{"example.com/dep", "example.com/dep/wrap"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			dir := copyFixture(t)

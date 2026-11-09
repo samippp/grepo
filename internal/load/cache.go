@@ -233,3 +233,34 @@ func (ca *cache) checked(key string, tpkg *types.Package, fset *token.FileSet, c
 func (ca *cache) save() error {
 	return ca.st.Save(ca.ctx, ca.rows, ca.used)
 }
+
+// borrowsMethods reports whether tpkg declares an interface type defined
+// from another named interface (type List metav1.ListInterface): checked
+// from source, its methods are the other interface's. Export data copies
+// the interface, so read back they'd be new methods of tpkg's type, and the
+// graph would name interface calls through it differently. Such a package
+// isn't cached; a package that only mentions its types is, since reading
+// export data keeps the types already in the map.
+func borrowsMethods(tpkg *types.Package) bool {
+	scope := tpkg.Scope()
+	for _, name := range scope.Names() {
+		tn, ok := scope.Lookup(name).(*types.TypeName)
+		if !ok || tn.IsAlias() {
+			continue
+		}
+		named, ok := tn.Type().(*types.Named)
+		if !ok {
+			continue
+		}
+		iface, ok := named.Underlying().(*types.Interface)
+		if !ok {
+			continue
+		}
+		for m := range iface.ExplicitMethods() {
+			if recv := m.Signature().Recv(); recv != nil && types.Unalias(recv.Type()) != named {
+				return true
+			}
+		}
+	}
+	return false
+}
