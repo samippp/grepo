@@ -41,8 +41,8 @@ type listed struct {
 	ImportMap  map[string]string // source path → resolved, when they differ
 	Module     *listedModule
 	Standard   bool // in the Go distribution
-	DepOnly  bool // a dependency, not matched by ./...
-	Error    *struct{ Pos, Err string }
+	DepOnly    bool // a dependency, not matched by ./...
+	Error      *struct{ Pos, Err string }
 }
 
 // listedModule is a package's module, as go list reports it.
@@ -60,9 +60,21 @@ const listFields = "ImportPath,Name,Dir,GoFiles,CgoFiles,Imports,ImportMap,Modul
 type loader struct {
 	fset   *token.FileSet
 	sizes  types.Sizes
-	goroot string            // the target's, for naming stdlib files
+	env    goEnv
 	checks map[string]*check // by import path
 	cpu    chan struct{}     // one token per core
+	cache  *cache            // nil without a store
+
+	mu      sync.Mutex
+	checked []string // type-checked from source
+}
+
+// goEnv is what the loader asks the go command for.
+type goEnv struct {
+	GOOS, GOARCH string // GOARCH: type sizes, which consts like unsafe.Sizeof(x) depend on
+	GOROOT       string // for naming stdlib files
+	GOVERSION    string
+	GOMODCACHE   string
 }
 
 // fromGoList loads like GoPackages, without go/packages.
@@ -83,6 +95,11 @@ func fromGoList(ctx context.Context, dir string, st *store.Store, log *slog.Logg
 		return nil, err
 	}
 	log.Debug("listed packages", "count", len(list), "took", logging.Since(start))
+	if st != nil {
+		if ld.cache, err = newCache(ctx, st, abs, ld.env); err != nil {
+			log.Warn("not using the store", "err", err)
+		}
+	}
 
 	for _, lp := range list {
 		ld.checks[lp.ImportPath] = &check{lp: lp, done: make(chan struct{})}
@@ -96,7 +113,15 @@ func fromGoList(ctx context.Context, dir string, st *store.Store, log *slog.Logg
 	}
 	wg.Wait()
 
-	res := &Result{Dir: abs}
+	cached := 0
+	if ld.cache != nil {
+		cached = len(ld.cache.used)
+		if err := ld.cache.save(); err != nil {
+			log.Warn("saving to the store", "err", err)
+		}
+	}
+
+	res := &Result{Dir: abs, Checked: slices.Sorted(slices.Values(ld.checked))}
 	for _, lp := range list { // go list order: dependencies first
 		c := ld.checks[lp.ImportPath]
 		if lp.DepOnly {
@@ -113,7 +138,8 @@ func fromGoList(ctx context.Context, dir string, st *store.Store, log *slog.Logg
 	if len(res.Packages) == 0 {
 		return nil, fmt.Errorf("no Go packages found in %s", abs)
 	}
-	log.Info("loaded packages", "module", res.Module, "count", len(res.Packages), "took", logging.Since(start))
+	log.Info("loaded packages", "module", res.Module, "count", len(res.Packages),
+		"checked", len(ld.checked), "cached", cached, "took", logging.Since(start))
 	return res, nil
 }
 
@@ -168,23 +194,22 @@ func goList(ctx context.Context, dir string, log *slog.Logger) ([]*listed, error
 	}
 }
 
-// newLoader asks the go command for the target's GOARCH (type sizes, which
-// consts like unsafe.Sizeof(x) depend on) and GOROOT.
+// newLoader asks the go command for the target's environment (goEnv).
 func newLoader(ctx context.Context, dir string) (*loader, error) {
-	cmd := exec.CommandContext(ctx, "go", "env", "GOARCH", "GOROOT")
+	cmd := exec.CommandContext(ctx, "go", "env", "-json", "GOOS", "GOARCH", "GOROOT", "GOVERSION", "GOMODCACHE")
 	cmd.Dir = dir
 	out, err := cmd.Output()
 	if err != nil {
 		return nil, fmt.Errorf("go env: %w", err)
 	}
-	env := strings.Fields(string(out))
-	if len(env) != 2 {
-		return nil, fmt.Errorf("go env: unexpected output %q", out)
+	var env goEnv
+	if err := json.Unmarshal(out, &env); err != nil {
+		return nil, fmt.Errorf("go env: %w", err)
 	}
 	return &loader{
 		fset:   token.NewFileSet(),
-		sizes:  types.SizesFor("gc", env[0]),
-		goroot: env[1],
+		sizes:  types.SizesFor("gc", env.GOARCH),
+		env:    env,
 		checks: map[string]*check{},
 		cpu:    make(chan struct{}, runtime.GOMAXPROCS(0)),
 	}, nil
@@ -196,6 +221,7 @@ type check struct {
 	done  chan struct{}
 	types *types.Package // nil if it couldn't be checked
 	pkg   *Package       // repo packages only
+	key   string         // with a store: its cache key, ready with types
 }
 
 func (c *check) run(ld *loader) {
@@ -219,7 +245,29 @@ func (c *check) run(ld *loader) {
 	ld.cpu <- struct{}{}
 	defer func() { <-ld.cpu }()
 
-	files := ld.parseFiles(c.lp, repo, report)
+	// With a store, a dependency's types can come from its export data.
+	// Repo packages are checked every time: the walk needs their syntax.
+	var srcs []source
+	cacheable := false
+	if ld.cache != nil {
+		identity := fileIdentity(c.lp, ld.env.GOVERSION, ld.env.GOMODCACHE)
+		if identity == "" {
+			srcs = readSources(c.lp)
+		}
+		var readable bool
+		c.key, readable = ld.cache.key(c.lp, identity, srcs, ld.checks)
+		cacheable = readable && !repo && c.lp.Error == nil
+		if cacheable {
+			if tpkg := ld.cache.load(c.key, c.lp.ImportPath, ld.fset); tpkg != nil {
+				c.types = tpkg
+				return
+			}
+		}
+	}
+	if srcs == nil {
+		srcs = readSources(c.lp)
+	}
+	files := ld.parseFiles(c.lp, srcs, repo, report)
 
 	var info *types.Info
 	if repo {
@@ -254,6 +302,12 @@ func (c *check) run(ld *loader) {
 	tpkg := types.NewPackage(c.lp.ImportPath, c.lp.Name)
 	_ = types.NewChecker(&conf, ld.fset, tpkg, info).Files(files) // errors went to conf.Error
 	c.types = tpkg
+	ld.mu.Lock()
+	ld.checked = append(ld.checked, c.lp.ImportPath)
+	ld.mu.Unlock()
+	if ld.cache != nil {
+		ld.cache.checked(c.key, tpkg, ld.fset, cacheable)
+	}
 
 	if repo {
 		c.pkg = &Package{
@@ -275,25 +329,25 @@ func (c *check) run(ld *loader) {
 // as the walk reads them; dependencies without comments or object resolution.
 // Stdlib files are named $GOROOT/src/..., as compiler export data names them,
 // so positions in the Go distribution don't depend on where it's installed.
-func (ld *loader) parseFiles(lp *listed, repo bool, report func(error)) []*ast.File {
+func (ld *loader) parseFiles(lp *listed, srcs []source, repo bool, report func(error)) []*ast.File {
 	mode := parser.SkipObjectResolution
 	if repo {
 		mode = parser.AllErrors | parser.ParseComments
 	}
 	var files []*ast.File
-	for _, path := range goFiles(lp) {
+	for _, src := range srcs {
+		path := src.path
 		name := path
 		if lp.Standard {
-			if rel, err := filepath.Rel(filepath.Join(ld.goroot, "src"), path); err == nil {
+			if rel, err := filepath.Rel(filepath.Join(ld.env.GOROOT, "src"), path); err == nil {
 				name = "$GOROOT/src/" + filepath.ToSlash(rel)
 			}
 		}
-		src, err := os.ReadFile(path)
-		if err != nil {
-			report(posError{path + ":1", err.Error()})
+		if src.err != nil {
+			report(posError{path + ":1", src.err.Error()})
 			continue
 		}
-		f, err := parser.ParseFile(ld.fset, name, src, mode)
+		f, err := parser.ParseFile(ld.fset, name, src.data, mode)
 		if list, ok := errors.AsType[scanner.ErrorList](err); ok {
 			for _, e := range list {
 				report(posError{e.Pos.String(), e.Msg})
@@ -306,6 +360,22 @@ func (ld *loader) parseFiles(lp *listed, repo bool, report func(error)) []*ast.F
 		}
 	}
 	return files
+}
+
+// source is one of a package's files, read.
+type source struct {
+	path string // absolute
+	data []byte
+	err  error
+}
+
+func readSources(lp *listed) []source {
+	var srcs []source
+	for _, path := range goFiles(lp) {
+		data, err := os.ReadFile(path)
+		srcs = append(srcs, source{path, data, err})
+	}
+	return srcs
 }
 
 // goFiles is the package's Go files, cgo ones included, as absolute paths.

@@ -6,8 +6,9 @@
 // how long it took. Errors in individual packages are logged as warnings rather
 // than failing the run, so partly broken repos still produce output.
 //
-// Planned: from M2 this also writes the results to a SQLite store, which the
-// query layer and `grepo serve` read.
+// Dependencies' types are cached in the shared store (internal/store), so a
+// later run doesn't type-check them again; --no-cache loads everything from
+// source. Planned: the graph is stored too, for the query layer and `grepo serve`.
 
 package cli
 
@@ -15,6 +16,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"time"
 
@@ -24,10 +26,12 @@ import (
 	"github.com/samippp/grepo/internal/load"
 	"github.com/samippp/grepo/internal/logging"
 	"github.com/samippp/grepo/internal/source"
+	"github.com/samippp/grepo/internal/store"
 )
 
 func newAnalyzeCmd(a *app) *cobra.Command {
 	var out, loader string
+	var noCache bool
 
 	cmd := &cobra.Command{
 		Use:   "analyze [github-link | path]",
@@ -57,7 +61,14 @@ func newAnalyzeCmd(a *app) *cobra.Command {
 			if loader == "packages" { // the go/packages path, for comparing loaders
 				res, _, err = load.GoPackages(ctx, repo.Dir, log)
 			} else {
-				res, err = load.Load(ctx, repo.Dir, nil, log)
+				var st *store.Store
+				if !noCache {
+					st = openStore(log)
+					if st != nil {
+						defer st.Close()
+					}
+				}
+				res, err = load.Load(ctx, repo.Dir, st, log)
 			}
 			if err != nil {
 				return err
@@ -109,9 +120,25 @@ func newAnalyzeCmd(a *app) *cobra.Command {
 	}
 
 	cmd.Flags().StringVarP(&out, "out", "o", "", "write JSON to this file instead of stdout")
+	cmd.Flags().BoolVar(&noCache, "no-cache", false, "type-check everything from source, without reading or writing the store")
 	cmd.Flags().StringVar(&loader, "loader", "", `dev: "packages" loads through go/packages instead`)
 	_ = cmd.Flags().MarkHidden("loader")
 	return cmd
+}
+
+// openStore opens the shared store, or returns nil (logged) if it can't: a
+// run without the cache is slower, not wrong.
+func openStore(log *slog.Logger) *store.Store {
+	path, err := store.DefaultPath()
+	if err == nil {
+		var st *store.Store
+		if st, err = store.Open(path); err == nil {
+			log.Debug("opened store", "path", path)
+			return st
+		}
+	}
+	log.Warn("not using the store", "err", err)
+	return nil
 }
 
 // resolvedPercent formats the share of calls with a known target, e.g. "71.4%".

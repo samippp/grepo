@@ -1,8 +1,10 @@
 package load
 
 import (
+	"fmt"
 	"io/fs"
 	"log/slog"
+	"maps"
 	"os"
 	"path/filepath"
 	"slices"
@@ -103,6 +105,31 @@ func TestCachedLoad(t *testing.T) {
 	warm := mustLoad(t, dir, st)
 	diff(t, describe(warm), describe(cold))
 	checkChecked(t, warm)
+
+	// describe leaves out positions outside the repo; the graph reads them
+	// (a field of type T tls.ConnectionState), and export data keeps lines.
+	positions := func(res *Result) map[string]string {
+		p := res.Packages[slices.IndexFunc(res.Packages, func(p *Package) bool { return p.PkgPath == "example.com/loadfix" })]
+		at := map[string]string{}
+		for _, imp := range p.Types.Imports() {
+			for _, name := range []string{"Println", "Box"} {
+				if obj := imp.Scope().Lookup(name); obj != nil {
+					pos := p.Fset.Position(obj.Pos())
+					at[imp.Path()+"."+name] = fmt.Sprintf("%s:%d", pos.Filename, pos.Line)
+				}
+			}
+		}
+		return at
+	}
+	want := map[string]string{
+		"fmt.Println":         "$GOROOT/src/fmt/print.go:" + strings.Split(positions(cold)["fmt.Println"], ":")[1],
+		"example.com/dep.Box": filepath.Join(dir, "dep/dep.go") + ":8",
+	}
+	for _, res := range []*Result{cold, warm} {
+		if got := positions(res); !maps.Equal(got, want) {
+			t.Errorf("outside positions %v, want %v", got, want)
+		}
+	}
 }
 
 // After an edit, a load through the store gives what a load without one
@@ -122,7 +149,7 @@ func TestCachedLoadAfterEdits(t *testing.T) {
 				"func (b Box[T]) Get() T { return b.V }\n\nfunc (b Box[T]) Set(v T) Box[T] { b.V = v; return b }")
 		}, []string{"example.com/dep"}},
 		{"dep go version", func(t *testing.T, dir string) {
-			edit(t, filepath.Join(dir, "dep/go.mod"), "go 1.21", "go 1.22")
+			edit(t, filepath.Join(dir, "dep/go.mod"), "go 1.21", "go 1.20") // lower: a higher one needs the main module's raised
 		}, []string{"example.com/dep"}},
 		{"moved replace", func(t *testing.T, dir string) {
 			if err := os.MkdirAll(filepath.Join(dir, "third_party"), 0o755); err != nil {
