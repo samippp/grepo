@@ -130,8 +130,9 @@ func (s *Store) Share(ctx context.Context, key string) (share []byte, saved bool
 	return share, true, nil
 }
 
-// SaveShares saves graph shares by key, in one transaction. Only rows already
-// saved get one: a share is no use without the package's export data.
+// SaveShares saves graph shares by key, in one transaction; a nil share
+// removes the saved one. Only rows already saved get one: a share is no use
+// without the package's export data.
 func (s *Store) SaveShares(ctx context.Context, shares map[string][]byte) error {
 	if len(shares) == 0 {
 		return nil
