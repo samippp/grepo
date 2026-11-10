@@ -2,6 +2,7 @@ package load
 
 import (
 	"fmt"
+	"go/types"
 	"io/fs"
 	"log/slog"
 	"maps"
@@ -179,12 +180,23 @@ func TestCachedLoadAfterEdits(t *testing.T) {
 	}
 }
 
-// Keys hold no repo location: the same code in another directory uses the
-// same rows.
-func TestCacheIgnoresLocation(t *testing.T) {
+// The same code in another directory reuses the stdlib's and the module
+// cache's rows, but not those of packages whose files are hashed (the repo,
+// a local replace): their export data holds absolute positions, which would
+// point into the first copy.
+func TestCacheKeyedOnLocation(t *testing.T) {
 	st := openStore(t)
 	mustLoad(t, copyFixture(t), st)
-	checkChecked(t, mustLoad(t, copyFixture(t), st))
+	dir := copyFixture(t)
+	res := mustLoad(t, dir, st)
+	checkChecked(t, res, "example.com/dep", "example.com/dep/wrap")
+
+	p := res.Packages[slices.IndexFunc(res.Packages, func(p *Package) bool { return p.PkgPath == "example.com/loadfix" })]
+	i := slices.IndexFunc(p.Types.Imports(), func(imp *types.Package) bool { return imp.Path() == "example.com/dep" })
+	greeter := p.Types.Imports()[i].Scope().Lookup("Greeter")
+	if file := p.Fset.Position(greeter.Pos()).Filename; !within(dir, file) {
+		t.Errorf("dep.Greeter is in %s, outside the copy loaded (%s)", file, dir)
+	}
 }
 
 // How modules are downloaded isn't in the key: go.sum fixes what they are.
@@ -242,6 +254,7 @@ func TestPackageKey(t *testing.T) {
 		"file content":     func(k *keyInput) { k.Files[0].Hash = "h2" },
 		"added file":       func(k *keyInput) { k.Files = append(k.Files, fileKey{Path: "p/b.go", Hash: "h3"}) },
 		"identity":         func(k *keyInput) { k.Identity = "example.com/p@v1.0.0" },
+		"root":             func(k *keyInput) { k.Root = "/elsewhere" },
 		"an import's key":  func(k *keyInput) { k.ImportKeys[1] = "kfmt2" },
 		"field boundaries": func(k *keyInput) { k.GOOS, k.GOARCH = "linuxamd", "64" },
 	} {

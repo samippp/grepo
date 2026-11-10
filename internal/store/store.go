@@ -3,9 +3,9 @@
 // so it doesn't type-check the package again: its export data, and later its
 // graph share.
 //
-// Keys say everything a row depends on, so rows are shared by every repo
-// using the same module cache, and nothing is ever invalidated: a changed
-// package gets a new key.
+// Keys say everything a row depends on, so the stdlib's and the module
+// cache's rows are shared by every repo using the same module cache, and
+// nothing is ever invalidated: a changed package gets a new key.
 package store
 
 import (
