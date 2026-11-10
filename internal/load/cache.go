@@ -43,6 +43,7 @@ type keyInput struct {
 
 	Files      []fileKey // sorted by path
 	Identity   string    // module@version or std@GOVERSION; "" if Files carry content hashes
+	Root       string    // with hashed Files: the repo root, since export data holds absolute positions
 	ImportKeys []string  // in Imports order
 }
 
@@ -168,6 +169,11 @@ func (ca *cache) key(lp *listed, identity string, srcs []source, checks map[stri
 			k.Files = append(k.Files, fileKey{Path: name})
 		}
 	} else {
+		// Hashed files are in the repo, or beside it (a local replace,
+		// vendor). The graph shows their positions relative to the root, and
+		// export data keeps them absolute, so the same code elsewhere can't
+		// share the row.
+		k.Root = ca.root
 		for _, src := range srcs {
 			path, err := filepath.Rel(ca.root, src.path)
 			if err != nil {
