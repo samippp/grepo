@@ -25,21 +25,51 @@ func openStore(t *testing.T) *store.Store {
 	return st
 }
 
-// loadAndBuild loads testdata/simple through st, builds its graph and saves
-// the shares, as analyze does.
-func loadAndBuild(t *testing.T, st *store.Store) (*load.Result, []byte) {
-	t.Helper()
-	return buildDir(t, "testdata/simple", st)
-}
+// ways are the two ways to build a graph: from the Result after the load,
+// or during it with a CallGraphBuilder as the walk.
+var ways = []struct {
+	name   string
+	during bool
+}{{"after the load", false}, {"during the load", true}}
 
-// buildDir is loadAndBuild for the repo at dir; a nil st builds without one.
-func buildDir(t *testing.T, dir string, st *store.Store) (*load.Result, []byte) {
+// build loads the repo at dir through st (nil: no store) and builds its graph.
+func build(t *testing.T, dir string, st *store.Store, during bool) (*load.Result, *CallGraph, map[string][]byte, error) {
 	t.Helper()
-	res, err := load.Load(t.Context(), dir, st, slog.New(slog.DiscardHandler), nil)
+	var cb *CallGraphBuilder
+	var walk load.Walk
+	if during {
+		root, err := filepath.Abs(dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		cb = NewCallGraphBuilder(root)
+		walk = cb.Add
+	}
+	res, err := load.Load(t.Context(), dir, st, slog.New(slog.DiscardHandler), walk)
 	if err != nil {
 		t.Fatal(err)
 	}
-	g, shares, err := BuildCallGraph(res)
+	var g *CallGraph
+	var shares map[string][]byte
+	if during {
+		g, shares, err = cb.CallGraph()
+	} else {
+		g, shares, err = BuildCallGraph(res)
+	}
+	return res, g, shares, err
+}
+
+// loadAndBuild loads testdata/simple through st, builds its graph and saves
+// the shares, as analyze does.
+func loadAndBuild(t *testing.T, st *store.Store, during bool) (*load.Result, []byte) {
+	t.Helper()
+	return buildDir(t, "testdata/simple", st, during)
+}
+
+// buildDir is loadAndBuild for the repo at dir; a nil st builds without one.
+func buildDir(t *testing.T, dir string, st *store.Store, during bool) (*load.Result, []byte) {
+	t.Helper()
+	res, g, shares, err := build(t, dir, st, during)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -62,39 +92,41 @@ func TestCallGraphFromStore(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	st := openStore(t)
-	_, cold := loadAndBuild(t, st)
-	res, warm := loadAndBuild(t, st)
+	for _, way := range ways {
+		t.Run(way.name, func(t *testing.T) {
+			st := openStore(t)
+			_, cold := loadAndBuild(t, st, way.during)
+			res, warm := loadAndBuild(t, st, way.during)
 
-	for _, p := range res.Packages {
-		if p.Share == nil || slices.Contains(res.Checked, p.PkgPath) {
-			t.Errorf("%s was checked again", p.PkgPath)
-		}
-	}
-	if !bytes.Equal(cold, want) {
-		t.Error("the graph built while filling the store differs from one without it")
-	}
-	if !bytes.Equal(warm, want) {
-		t.Error("the graph built from the store differs from the one walked")
+			if checked := repoChecked(res); len(checked) > 0 {
+				t.Errorf("checked %v again", checked)
+			}
+			if !bytes.Equal(cold, want) {
+				t.Error("the graph built while filling the store differs from one without it")
+			}
+			if !bytes.Equal(warm, want) {
+				t.Error("the graph built from the store differs from the one walked")
+			}
+		})
 	}
 }
 
 // A share the store holds but can't be decoded fails the build, naming the
 // package: there's no syntax to walk instead.
 func TestCallGraphBadShare(t *testing.T) {
-	st := openStore(t)
-	res, _ := loadAndBuild(t, st)
-	key := res.Packages[0].Key
-	if err := st.SaveShares(t.Context(), map[string][]byte{key: []byte("{not json")}); err != nil {
-		t.Fatal(err)
-	}
-	res, err := load.Load(t.Context(), "testdata/simple", st, slog.New(slog.DiscardHandler), nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	_, _, err = BuildCallGraph(res)
-	if err == nil || !strings.Contains(err.Error(), res.Packages[0].PkgPath) {
-		t.Errorf("err = %v, want one naming %s", err, res.Packages[0].PkgPath)
+	for _, way := range ways {
+		t.Run(way.name, func(t *testing.T) {
+			st := openStore(t)
+			res, _ := loadAndBuild(t, st, way.during)
+			bad := res.Packages[0]
+			if err := st.SaveShares(t.Context(), map[string][]byte{bad.Key: []byte("{not json")}); err != nil {
+				t.Fatal(err)
+			}
+			_, _, _, err := build(t, "testdata/simple", st, way.during)
+			if err == nil || !strings.Contains(err.Error(), bad.PkgPath) {
+				t.Errorf("err = %v, want one naming %s", err, bad.PkgPath)
+			}
+		})
 	}
 }
 
@@ -151,27 +183,29 @@ func TestCallGraphPartlyFromStore(t *testing.T) {
 				walk = append(walk, p)
 			}
 		}
-		t.Run(strings.Join(walk, "+"), func(t *testing.T) {
-			t.Parallel() // each has its own store
-			st := openStore(t)
-			cold, _ := loadAndBuild(t, st)
-			drop := map[string][]byte{}
-			for _, p := range cold.Packages {
-				if slices.Contains(walk, p.PkgPath) {
-					drop[p.Key] = nil
+		for _, way := range ways {
+			t.Run(strings.Join(walk, "+")+", "+way.name, func(t *testing.T) {
+				t.Parallel() // each has its own store
+				st := openStore(t)
+				cold, _ := loadAndBuild(t, st, way.during)
+				drop := map[string][]byte{}
+				for _, p := range cold.Packages {
+					if slices.Contains(walk, p.PkgPath) {
+						drop[p.Key] = nil
+					}
 				}
-			}
-			if err := st.SaveShares(t.Context(), drop); err != nil {
-				t.Fatal(err)
-			}
-			res, got := loadAndBuild(t, st)
-			if checked := repoChecked(res); !slices.Equal(checked, slices.Sorted(slices.Values(walk))) {
-				t.Errorf("checked %v, want %v", checked, walk)
-			}
-			if !bytes.Equal(got, want) {
-				t.Error("the graph differs from the one walked from source")
-			}
-		})
+				if err := st.SaveShares(t.Context(), drop); err != nil {
+					t.Fatal(err)
+				}
+				res, got := loadAndBuild(t, st, way.during)
+				if checked := repoChecked(res); !slices.Equal(checked, slices.Sorted(slices.Values(walk))) {
+					t.Errorf("checked %v, want %v", checked, walk)
+				}
+				if !bytes.Equal(got, want) {
+					t.Error("the graph differs from the one walked from source")
+				}
+			})
+		}
 	}
 }
 
@@ -235,26 +269,28 @@ func TestCallGraphFromStoreAfterEdits(t *testing.T) {
 			writeFile(t, filepath.Join(dir, "store/never.go"), "//go:build never\n\npackage store\n\nfunc Never() {}\n")
 		}, nil},
 	} {
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel() // each has its own copy and store
-			dir := copySimple(t)
-			st := openStore(t)
-			buildDir(t, dir, st)
-			tc.edit(t, dir)
+		for _, way := range ways {
+			t.Run(tc.name+", "+way.name, func(t *testing.T) {
+				t.Parallel() // each has its own copy and store
+				dir := copySimple(t)
+				st := openStore(t)
+				buildDir(t, dir, st, way.during)
+				tc.edit(t, dir)
 
-			res, got := buildDir(t, dir, st)
-			if checked := repoChecked(res); !slices.Equal(checked, tc.checked) {
-				t.Errorf("checked %v, want %v", checked, tc.checked)
-			}
-			for _, p := range res.Packages {
-				if len(p.Errors) > 0 {
-					t.Fatalf("the edit broke %s: %v", p.PkgPath, p.Errors)
+				res, got := buildDir(t, dir, st, way.during)
+				if checked := repoChecked(res); !slices.Equal(checked, tc.checked) {
+					t.Errorf("checked %v, want %v", checked, tc.checked)
 				}
-			}
-			_, want := buildDir(t, dir, nil)
-			if !bytes.Equal(got, want) {
-				t.Error("the graph built through the store differs from one without it")
-			}
-		})
+				for _, p := range res.Packages {
+					if len(p.Errors) > 0 {
+						t.Fatalf("the edit broke %s: %v", p.PkgPath, p.Errors)
+					}
+				}
+				_, want := buildDir(t, dir, nil, false)
+				if !bytes.Equal(got, want) {
+					t.Error("the graph built through the store differs from one without it")
+				}
+			})
+		}
 	}
 }
