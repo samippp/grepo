@@ -122,7 +122,8 @@ var fixtureCallGraph = sync.OnceValues(func() (*CallGraph, error) {
 	if err != nil {
 		return nil, err
 	}
-	return BuildCallGraph(res), nil
+	g, _, err := BuildCallGraph(res)
+	return g, err
 })
 
 func loadFixture(t *testing.T) *load.Result {
@@ -272,7 +273,11 @@ func TestBuildCallGraphPackageOrder(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	got, err := json.Marshal(BuildCallGraph(&reversed))
+	g, _, err := BuildCallGraph(&reversed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := json.Marshal(g)
 	if err != nil {
 		t.Fatal(err)
 	}

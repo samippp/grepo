@@ -58,10 +58,10 @@ func newAnalyzeCmd(a *app) *cobra.Command {
 			}
 
 			var res *load.Result
+			var st *store.Store       // nil: no store, or --loader packages
 			if loader == "packages" { // the go/packages path, for comparing loaders
 				res, _, err = load.GoPackages(ctx, repo.Dir, log)
 			} else {
-				var st *store.Store
 				if !noCache {
 					st = openStore(log)
 					if st != nil {
@@ -80,13 +80,25 @@ func newAnalyzeCmd(a *app) *cobra.Command {
 				"packages", len(g.Packages), "edges", len(g.Edges), "took", logging.Since(t))
 
 			t = time.Now()
-			cg := graph.BuildCallGraph(res)
+			cg, shares, err := graph.BuildCallGraph(res)
+			if err != nil {
+				return fmt.Errorf("%w (--no-cache skips the store)", err)
+			}
 			kinds := cg.CountByKind()
 			log.Info("built call graph",
 				"functions", len(cg.Functions), "calls", len(cg.Calls),
 				"static", kinds[graph.StaticCall], "interface", kinds[graph.InterfaceCall], "dynamic", kinds[graph.DynamicCall],
 				"resolved", resolvedPercent(kinds[graph.StaticCall], len(cg.Calls)),
 				"took", logging.Since(t))
+			if st != nil && len(shares) > 0 {
+				// Walked packages' shares, so the next run needn't walk them.
+				t = time.Now()
+				if err := st.SaveShares(ctx, shares); err != nil {
+					log.Warn("saving graph shares to the store", "err", err)
+				} else {
+					log.Debug("saved graph shares", "packages", len(shares), "took", logging.Since(t))
+				}
+			}
 
 			// Local paths have no source info, so leave the field out entirely.
 			var src *source.Repo

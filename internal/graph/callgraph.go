@@ -2,6 +2,8 @@ package graph
 
 import (
 	"cmp"
+	"encoding/json"
+	"fmt"
 	"go/ast"
 	"go/token"
 	"go/types"
@@ -155,13 +157,18 @@ func (g *CallGraph) TypeID(tn *types.TypeName) string { return g.ids.typeID(tn) 
 //   - closures are nodes owning what's inside them; built-ins/conversions aren't calls
 //   - external calls kept; interface calls point at the interface method
 //   - dynamic calls have no Callee; one edge per call site; output sorted
-func BuildCallGraph(res *load.Result) *CallGraph {
+//
+// A package from the store (Share set) isn't walked: its share is decoded,
+// and FuncID, TypeID and ClosureID don't know its local types or closures.
+// shares holds the packages walked that have a row (Key set), encoded for the
+// store; without a store there are none. err is a share that can't be decoded.
+func BuildCallGraph(res *load.Result) (g *CallGraph, shares map[string][]byte, err error) {
 	repo := map[string]bool{}
 	for _, pkg := range res.Packages {
 		repo[pkg.PkgPath] = true
 	}
 
-	g := &CallGraph{
+	g = &CallGraph{
 		Types:     []Type{},
 		Variables: []Variable{},
 		Functions: []Function{},
@@ -170,22 +177,74 @@ func BuildCallGraph(res *load.Result) *CallGraph {
 		ids:       idTable{},
 		closures:  map[*ast.FuncLit]string{},
 	}
+	shares = map[string][]byte{}
 	var summaries []typeSummary
 	for _, pkg := range res.Packages {
-		b := buildPackage(pkg, res.Dir, repoImports(pkg, repo))
-		g.Types = append(g.Types, b.types...)
-		g.Variables = append(g.Variables, b.variables...)
-		g.Functions = append(g.Functions, b.functions...)
-		g.Calls = append(g.Calls, b.calls...)
-		g.Accesses = append(g.Accesses, b.accesses...)
-		maps.Copy(g.ids, b.ids)
-		maps.Copy(g.closures, b.closures)
-		summaries = append(summaries, b.summary)
+		var s *share
+		if pkg.Share != nil {
+			if s, err = decodeShare(pkg.Share); err != nil {
+				return nil, nil, fmt.Errorf("reading %s's graph share from the store: %w", pkg.PkgPath, err)
+			}
+		} else {
+			b := buildPackage(pkg, res.Dir, repoImports(pkg, repo))
+			maps.Copy(g.ids, b.ids)
+			maps.Copy(g.closures, b.closures)
+			s = b.share()
+			if pkg.Key != "" {
+				shares[pkg.Key] = s.encode()
+			}
+		}
+		g.Types = append(g.Types, s.Types...)
+		g.Variables = append(g.Variables, s.Variables...)
+		g.Functions = append(g.Functions, s.Functions...)
+		g.Calls = append(g.Calls, s.Calls...)
+		g.Accesses = append(g.Accesses, s.Accesses...)
+		summaries = append(summaries, s.Summary)
 	}
 	// After the merge: a type and an interface it implements can be in different packages.
 	g.Implementations = matchImplementations(summaries)
 	g.sort()
-	return g
+	return g, shares, nil
+}
+
+// share is one package's part of the graph, as the store keeps it: what its
+// walk found, without what's keyed by pointers (local type and closure IDs).
+type share struct {
+	Types     []Type         `json:"types"`
+	Variables []Variable     `json:"variables"`
+	Functions []Function     `json:"functions"`
+	Calls     []FunctionCall `json:"calls"`
+	Accesses  []Access       `json:"accesses"`
+	Summary   typeSummary    `json:"summary"`
+}
+
+func (b *callGraphBuilder) share() *share {
+	return &share{
+		Types:     b.types,
+		Variables: b.variables,
+		Functions: b.functions,
+		Calls:     b.calls,
+		Accesses:  b.accesses,
+		Summary:   b.summary,
+	}
+}
+
+// encode is s as JSON, which keeps nil and empty lists apart, as the
+// graph's own JSON does.
+func (s *share) encode() []byte {
+	data, err := json.Marshal(s)
+	if err != nil {
+		panic(err) // strings, bools and lists of them always marshal
+	}
+	return data
+}
+
+func decodeShare(data []byte) (*share, error) {
+	s := new(share)
+	if err := json.Unmarshal(data, s); err != nil {
+		return nil, err
+	}
+	return s, nil
 }
 
 // buildPackage walks one package. Its output depends only on pkg, the repo
