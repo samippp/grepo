@@ -114,7 +114,7 @@ const (
 // fixtureLoad and fixtureCallGraph load and build testdata/simple once for
 // every test. Tests only read them.
 var fixtureLoad = sync.OnceValues(func() (*load.Result, error) {
-	return load.Load(context.Background(), "testdata/simple", nil, slog.New(slog.DiscardHandler))
+	return load.Load(context.Background(), "testdata/simple", nil, slog.New(slog.DiscardHandler), nil)
 })
 
 var fixtureCallGraph = sync.OnceValues(func() (*CallGraph, error) {

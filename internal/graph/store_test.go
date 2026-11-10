@@ -35,7 +35,7 @@ func loadAndBuild(t *testing.T, st *store.Store) (*load.Result, []byte) {
 // buildDir is loadAndBuild for the repo at dir; a nil st builds without one.
 func buildDir(t *testing.T, dir string, st *store.Store) (*load.Result, []byte) {
 	t.Helper()
-	res, err := load.Load(t.Context(), dir, st, slog.New(slog.DiscardHandler))
+	res, err := load.Load(t.Context(), dir, st, slog.New(slog.DiscardHandler), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -88,7 +88,7 @@ func TestCallGraphBadShare(t *testing.T) {
 	if err := st.SaveShares(t.Context(), map[string][]byte{key: []byte("{not json")}); err != nil {
 		t.Fatal(err)
 	}
-	res, err := load.Load(t.Context(), "testdata/simple", st, slog.New(slog.DiscardHandler))
+	res, err := load.Load(t.Context(), "testdata/simple", st, slog.New(slog.DiscardHandler), nil)
 	if err != nil {
 		t.Fatal(err)
 	}

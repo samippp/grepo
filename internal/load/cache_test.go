@@ -51,7 +51,7 @@ func openStore(t *testing.T) *store.Store {
 
 func mustLoad(t *testing.T, dir string, st *store.Store) *Result {
 	t.Helper()
-	res, err := Load(t.Context(), dir, st, slog.New(slog.DiscardHandler))
+	res, err := Load(t.Context(), dir, st, slog.New(slog.DiscardHandler), nil)
 	if err != nil {
 		t.Fatal(err)
 	}

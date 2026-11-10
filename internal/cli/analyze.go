@@ -68,7 +68,7 @@ func newAnalyzeCmd(a *app) *cobra.Command {
 						defer st.Close()
 					}
 				}
-				res, err = load.Load(ctx, repo.Dir, st, log)
+				res, err = load.Load(ctx, repo.Dir, st, log, nil)
 			}
 			if err != nil {
 				return err

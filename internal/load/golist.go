@@ -64,6 +64,8 @@ type loader struct {
 	checks map[string]*check // by import path
 	cpu    chan struct{}     // one token per core
 	cache  *cache            // nil without a store
+	walk   Walk              // nil: repo packages keep their syntax
+	repo   map[string]bool   // repo packages' import paths, for walk
 
 	mu      sync.Mutex
 	checked []string // type-checked from source
@@ -78,7 +80,7 @@ type goEnv struct {
 }
 
 // fromGoList loads like GoPackages, without go/packages.
-func fromGoList(ctx context.Context, dir string, st *store.Store, log *slog.Logger) (*Result, error) {
+func fromGoList(ctx context.Context, dir string, st *store.Store, log *slog.Logger, walk Walk) (*Result, error) {
 	abs, err := filepath.Abs(dir)
 	if err != nil {
 		return nil, err
@@ -101,12 +103,17 @@ func fromGoList(ctx context.Context, dir string, st *store.Store, log *slog.Logg
 		}
 	}
 
+	ld.walk = walk
 	for _, lp := range list {
 		ld.checks[lp.ImportPath] = &check{lp: lp, done: make(chan struct{})}
+		if !lp.DepOnly {
+			ld.repo[lp.ImportPath] = true
+		}
 	}
 	// Parsing and type-checking are CPU-bound: one package per core at a time.
 	// A package starts once its imports are done, so independent ones run in
-	// parallel and only the packages in progress hold syntax trees.
+	// parallel and only the packages in progress hold syntax trees (repo
+	// packages too, with a walk).
 	var wg sync.WaitGroup
 	for _, c := range ld.checks {
 		wg.Go(func() { c.run(ld) })
@@ -211,11 +218,13 @@ func newLoader(ctx context.Context, dir string) (*loader, error) {
 		sizes:  types.SizesFor("gc", env.GOARCH),
 		env:    env,
 		checks: map[string]*check{},
+		repo:   map[string]bool{},
 		cpu:    make(chan struct{}, runtime.GOMAXPROCS(0)),
 	}, nil
 }
 
-// check type-checks one listed package; done closes when its types are ready.
+// check type-checks one listed package; done closes when its types are
+// ready, before a repo package's walk.
 type check struct {
 	lp    *listed
 	done  chan struct{}
@@ -226,7 +235,6 @@ type check struct {
 }
 
 func (c *check) run(ld *loader) {
-	defer close(c.done)
 	repo := !c.lp.DepOnly
 	var errs []error
 	report := func(err error) {
@@ -259,6 +267,8 @@ func (c *check) run(ld *loader) {
 		c.key, readable = ld.cache.key(c.lp, identity, srcs, ld.checks)
 		cacheable = readable && c.lp.Error == nil
 		if cacheable && c.fromStore(ld) {
+			close(c.done)
+			c.walk(ld) // a repo package from the store: the walk takes its share
 			return
 		}
 	}
@@ -309,6 +319,7 @@ func (c *check) run(ld *loader) {
 		// hold absolute paths; dependencies' errors were dropped.
 		saved = ld.cache.checked(c.key, tpkg, ld.fset, cacheable && len(errs) == 0 && !borrowsMethods(tpkg), c.saved)
 	}
+	close(c.done) // dependents only need the types, not this package's walk
 
 	if repo {
 		c.pkg = c.newPackage(ld, tpkg)
@@ -318,6 +329,7 @@ func (c *check) run(ld *loader) {
 		if saved {
 			c.pkg.Key = c.key
 		}
+		c.walk(ld)
 	}
 }
 
@@ -342,6 +354,16 @@ func (c *check) fromStore(ld *loader) bool {
 		c.pkg.Share = share
 	}
 	return true
+}
+
+// walk hands a repo package to the load's walk, then drops what only the
+// walk needed: its syntax and type information, or its share.
+func (c *check) walk(ld *loader) {
+	if c.pkg == nil || ld.walk == nil {
+		return
+	}
+	ld.walk(c.pkg, ld.repo)
+	c.pkg.Syntax, c.pkg.TypesInfo, c.pkg.Share = nil, nil, nil
 }
 
 // newPackage is a repo package's Package, without what only checking gives.

@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -27,7 +28,7 @@ func TestFromGoListMatchesGoPackages(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			got, err := fromGoList(t.Context(), dir, nil, log)
+			got, err := fromGoList(t.Context(), dir, nil, log, nil)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -56,7 +57,7 @@ func TestStdlibPositions(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	own, err := fromGoList(t.Context(), "testdata/mod", nil, log)
+	own, err := fromGoList(t.Context(), "testdata/mod", nil, log, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -197,5 +198,76 @@ func diff(t *testing.T, got, want []string) {
 	}
 	if shown == 50 {
 		t.Error("more differences not shown")
+	}
+}
+
+// A walk sees each repo package once, whole, with every repo path in repo;
+// Load drops the package's syntax and type information after it.
+func TestWalk(t *testing.T) {
+	log := slog.New(slog.DiscardHandler)
+	var mu sync.Mutex
+	walked := map[string]int{}
+	var repoSeen map[string]bool
+	res, err := Load(t.Context(), "testdata/mod", nil, log, func(pkg *Package, repo map[string]bool) {
+		mu.Lock()
+		defer mu.Unlock()
+		walked[pkg.PkgPath]++
+		repoSeen = repo
+		if len(pkg.Syntax) == 0 || pkg.TypesInfo == nil || len(pkg.TypesInfo.Defs) == 0 {
+			t.Errorf("%s: walked without syntax or type information", pkg.PkgPath)
+		}
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want, wantRepo := map[string]int{}, map[string]bool{}
+	for _, p := range res.Packages {
+		want[p.PkgPath] = 1
+		wantRepo[p.PkgPath] = true
+		if p.Syntax != nil || p.TypesInfo != nil {
+			t.Errorf("%s: syntax or type information kept after the walk", p.PkgPath)
+		}
+		if p.Types == nil {
+			t.Errorf("%s: types dropped", p.PkgPath)
+		}
+	}
+	if !maps.Equal(walked, want) {
+		t.Errorf("walked %v, want each of %v once", walked, want)
+	}
+	if !maps.Equal(repoSeen, wantRepo) {
+		t.Errorf("repo = %v, want %v", repoSeen, wantRepo)
+	}
+}
+
+// A repo package from the store reaches the walk too, with its share and no
+// syntax; Load drops the share after.
+func TestWalkFromStore(t *testing.T) {
+	dir := copyFixture(t)
+	st := openStore(t)
+	saveShares(t, st, mustLoad(t, dir, st))
+
+	var mu sync.Mutex
+	shares := map[string]string{}
+	res, err := Load(t.Context(), dir, st, slog.New(slog.DiscardHandler), func(pkg *Package, repo map[string]bool) {
+		mu.Lock()
+		defer mu.Unlock()
+		if pkg.Share != nil && pkg.Syntax != nil {
+			t.Errorf("%s: walked with both a share and syntax", pkg.PkgPath)
+		}
+		shares[pkg.PkgPath] = string(pkg.Share)
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := shares[repoMain]; got != "share of "+repoMain {
+		t.Errorf("%s walked with share %q, want the saved one", repoMain, got)
+	}
+	if got, ok := shares[repoBroken]; !ok || got != "" {
+		t.Errorf("%s walked with share %q (walked: %v), want checked from source", repoBroken, got, ok)
+	}
+	for _, p := range res.Packages {
+		if p.Share != nil {
+			t.Errorf("%s: share kept after the walk", p.PkgPath)
+		}
 	}
 }
