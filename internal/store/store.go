@@ -1,7 +1,7 @@
 // Package store is grepo's on-disk cache: one shared SQLite database, one row
 // per package key (see load's packageKey). A row holds what a later run needs
-// so it doesn't type-check the package again: its export data, and later its
-// graph share.
+// so it doesn't type-check the package again: its export data, and for a repo
+// package its graph share, so it isn't walked either.
 //
 // Keys say everything a row depends on, so the stdlib's and the module
 // cache's rows are shared by every repo using the same module cache, and
@@ -23,13 +23,14 @@ import (
 
 // schemaVersion is bumped when the table changes. It's a cache, so an old
 // table is dropped rather than migrated.
-const schemaVersion = 1
+const schemaVersion = 2
 
 const schema = `CREATE TABLE IF NOT EXISTS packages (
 	key         TEXT PRIMARY KEY,
 	import_path TEXT NOT NULL,
 	last_used   INTEGER NOT NULL, -- unix seconds, for pruning
-	export      BLOB              -- gcexportdata
+	export      BLOB,             -- gcexportdata
+	share       BLOB              -- repo packages: the graph's share, encoded by graph
 )`
 
 // Store is an open cache database. Safe for concurrent use, and for several
@@ -43,6 +44,7 @@ type Row struct {
 	Key        string
 	ImportPath string // for debugging and pruning; the key already holds it
 	Export     []byte // gcexportdata
+	Share      []byte // repo packages, once walked; nil keeps the share already saved
 }
 
 // DefaultPath is the shared database, under the user cache directory.
@@ -115,8 +117,47 @@ func (s *Store) Export(ctx context.Context, key string) ([]byte, bool, error) {
 	return export, true, nil
 }
 
-// Save writes rows, replacing any under the same key, and marks the keys in
-// used as used now, in one transaction.
+// Share returns the graph share saved under key, nil if none, and whether
+// key has a row at all: a row without a share needn't be saved again.
+func (s *Store) Share(ctx context.Context, key string) (share []byte, saved bool, err error) {
+	err = s.db.QueryRowContext(ctx, `SELECT share FROM packages WHERE key = ?`, key).Scan(&share)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, false, nil
+	}
+	if err != nil {
+		return nil, false, err
+	}
+	return share, true, nil
+}
+
+// SaveShares saves graph shares by key, in one transaction; a nil share
+// removes the saved one. Only rows already saved get one: a share is no use
+// without the package's export data.
+func (s *Store) SaveShares(ctx context.Context, shares map[string][]byte) error {
+	if len(shares) == 0 {
+		return nil
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	put, err := tx.PrepareContext(ctx, `UPDATE packages SET share = ? WHERE key = ?`)
+	if err != nil {
+		return err
+	}
+	defer put.Close()
+	for key, share := range shares {
+		if _, err := put.ExecContext(ctx, share, key); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
+// Save writes rows, replacing any under the same key (a row without a share
+// keeps the saved one: the key fixes what it's a share of), and marks the
+// keys in used as used now, in one transaction.
 func (s *Store) Save(ctx context.Context, rows []Row, used []string) error {
 	if len(rows) == 0 && len(used) == 0 {
 		return nil
@@ -129,14 +170,15 @@ func (s *Store) Save(ctx context.Context, rows []Row, used []string) error {
 
 	now := time.Now().Unix()
 	if len(rows) > 0 {
-		put, err := tx.PrepareContext(ctx, `INSERT INTO packages (key, import_path, last_used, export) VALUES (?, ?, ?, ?)
-			ON CONFLICT (key) DO UPDATE SET import_path = excluded.import_path, last_used = excluded.last_used, export = excluded.export`)
+		put, err := tx.PrepareContext(ctx, `INSERT INTO packages (key, import_path, last_used, export, share) VALUES (?, ?, ?, ?, ?)
+			ON CONFLICT (key) DO UPDATE SET import_path = excluded.import_path, last_used = excluded.last_used,
+				export = excluded.export, share = coalesce(excluded.share, packages.share)`)
 		if err != nil {
 			return err
 		}
 		defer put.Close()
 		for _, r := range rows {
-			if _, err := put.ExecContext(ctx, r.Key, r.ImportPath, now, r.Export); err != nil {
+			if _, err := put.ExecContext(ctx, r.Key, r.ImportPath, now, r.Export, r.Share); err != nil {
 				return err
 			}
 		}

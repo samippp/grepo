@@ -219,11 +219,23 @@ func (ca *cache) load(key, path string, fset *token.FileSet) *types.Package {
 	return tpkg
 }
 
+// share returns the graph share saved under key (nil if none), and whether
+// key has a row.
+func (ca *cache) share(key string) (share []byte, saved bool) {
+	share, saved, err := ca.st.Share(ca.ctx, key)
+	if err != nil {
+		return nil, false
+	}
+	return share, saved
+}
+
 // checked records a package checked from source: later reads of export data
-// that mention it use these types, and a cacheable one is written back.
-func (ca *cache) checked(key string, tpkg *types.Package, fset *token.FileSet, cacheable bool) {
+// that mention it use these types, and a cacheable one is written back
+// unless its row is there already (saved: the key fixes what's in it).
+// It reports whether the package has a row after the load.
+func (ca *cache) checked(key string, tpkg *types.Package, fset *token.FileSet, cacheable, saved bool) bool {
 	var export bytes.Buffer
-	if cacheable {
+	if cacheable && !saved {
 		if err := gcexportdata.Write(&export, fset, tpkg); err != nil {
 			cacheable = false
 		}
@@ -231,9 +243,10 @@ func (ca *cache) checked(key string, tpkg *types.Package, fset *token.FileSet, c
 	ca.mu.Lock()
 	defer ca.mu.Unlock()
 	ca.imports[tpkg.Path()] = tpkg
-	if cacheable {
+	if cacheable && !saved {
 		ca.rows = append(ca.rows, store.Row{Key: key, ImportPath: tpkg.Path(), Export: export.Bytes()})
 	}
+	return cacheable
 }
 
 func (ca *cache) save() error {

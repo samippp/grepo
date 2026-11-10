@@ -40,7 +40,10 @@ func newVTADiffCmd(a *app) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			cg := graph.BuildCallGraph(res)
+			cg, _, err := graph.BuildCallGraph(res) // go/packages: nothing from the store, no shares
+			if err != nil {
+				return err
+			}
 
 			t := time.Now()
 			report := vtadiff.Compare(res, pkgs, cg)

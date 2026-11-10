@@ -52,9 +52,15 @@ type Package struct {
 	Errors  []error
 
 	Fset      *token.FileSet // shared by every package in the Result
-	Syntax    []*ast.File
-	Types     *types.Package
-	TypesInfo *types.Info
+	Syntax    []*ast.File    // nil when it came from the store
+	Types     *types.Package // from the store: its exported API only, what importers need
+	TypesInfo *types.Info    // nil when it came from the store
+
+	// With a store: Key is the package's row, "" if it has none (errors, or
+	// types export data can't carry). Share is the graph share saved there;
+	// when set, the package came from the store, not from source.
+	Key   string
+	Share []byte
 }
 
 // GoPackages' load mode. Its dependencies' types come from compiled export
