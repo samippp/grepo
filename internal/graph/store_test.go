@@ -152,6 +152,7 @@ func TestCallGraphPartlyFromStore(t *testing.T) {
 			}
 		}
 		t.Run(strings.Join(walk, "+"), func(t *testing.T) {
+			t.Parallel() // each has its own store
 			st := openStore(t)
 			cold, _ := loadAndBuild(t, st)
 			drop := map[string][]byte{}
@@ -235,6 +236,7 @@ func TestCallGraphFromStoreAfterEdits(t *testing.T) {
 		}, nil},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel() // each has its own copy and store
 			dir := copySimple(t)
 			st := openStore(t)
 			buildDir(t, dir, st)
