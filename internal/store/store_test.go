@@ -111,11 +111,13 @@ func TestShares(t *testing.T) {
 	ctx := t.Context()
 	share := func(key string) string {
 		t.Helper()
-		got, ok, err := s.Share(ctx, key)
-		if err != nil {
+		got, saved, err := s.Share(ctx, key)
+		switch {
+		case err != nil:
 			t.Fatal(err)
-		}
-		if !ok {
+		case !saved:
+			return "<no row>"
+		case got == nil:
 			return "<none>"
 		}
 		return string(got)
@@ -142,7 +144,7 @@ func TestShares(t *testing.T) {
 	if got, _, _ := s.Export(ctx, "a"); string(got) != "y" {
 		t.Errorf("Export(a) = %s, want the new y", got)
 	}
-	if got := share("missing"); got != "<none>" {
+	if got := share("missing"); got != "<no row>" {
 		t.Errorf("share(missing) = %s: saved without a row", got)
 	}
 }

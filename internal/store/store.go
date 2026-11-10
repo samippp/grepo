@@ -117,11 +117,11 @@ func (s *Store) Export(ctx context.Context, key string) ([]byte, bool, error) {
 	return export, true, nil
 }
 
-// Share returns the graph share saved under key, if any.
-func (s *Store) Share(ctx context.Context, key string) ([]byte, bool, error) {
-	var share []byte
-	err := s.db.QueryRowContext(ctx, `SELECT share FROM packages WHERE key = ?`, key).Scan(&share)
-	if errors.Is(err, sql.ErrNoRows) || (err == nil && share == nil) {
+// Share returns the graph share saved under key, nil if none, and whether
+// key has a row at all: a row without a share needn't be saved again.
+func (s *Store) Share(ctx context.Context, key string) (share []byte, saved bool, err error) {
+	err = s.db.QueryRowContext(ctx, `SELECT share FROM packages WHERE key = ?`, key).Scan(&share)
+	if errors.Is(err, sql.ErrNoRows) {
 		return nil, false, nil
 	}
 	if err != nil {

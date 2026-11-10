@@ -222,6 +222,7 @@ type check struct {
 	types *types.Package // nil if it couldn't be checked
 	pkg   *Package       // repo packages only
 	key   string         // with a store: its cache key, ready with types
+	saved bool           // a repo package's row is in the store already, maybe without a share
 }
 
 func (c *check) run(ld *loader) {
@@ -245,8 +246,8 @@ func (c *check) run(ld *loader) {
 	ld.cpu <- struct{}{}
 	defer func() { <-ld.cpu }()
 
-	// With a store, a dependency's types can come from its export data.
-	// Repo packages are checked every time: the walk needs their syntax.
+	// With a store, a package's types can come from its export data, and a
+	// repo package's graph share with them, so it isn't parsed or walked.
 	var srcs []source
 	cacheable := false
 	if ld.cache != nil {
@@ -256,12 +257,9 @@ func (c *check) run(ld *loader) {
 		}
 		var readable bool
 		c.key, readable = ld.cache.key(c.lp, identity, srcs, ld.checks)
-		cacheable = readable && !repo && c.lp.Error == nil
-		if cacheable {
-			if tpkg := ld.cache.load(c.key, c.lp.ImportPath, ld.fset); tpkg != nil {
-				c.types = tpkg
-				return
-			}
+		cacheable = readable && c.lp.Error == nil
+		if cacheable && c.fromStore(ld) {
+			return
 		}
 	}
 	if srcs == nil {
@@ -305,23 +303,57 @@ func (c *check) run(ld *loader) {
 	ld.mu.Lock()
 	ld.checked = append(ld.checked, c.lp.ImportPath)
 	ld.mu.Unlock()
+	saved := false
 	if ld.cache != nil {
-		ld.cache.checked(c.key, tpkg, ld.fset, cacheable && !borrowsMethods(tpkg))
+		// A repo package with errors is being worked on, and its messages
+		// hold absolute paths; dependencies' errors were dropped.
+		saved = ld.cache.checked(c.key, tpkg, ld.fset, cacheable && len(errs) == 0 && !borrowsMethods(tpkg), c.saved)
 	}
 
 	if repo {
-		c.pkg = &Package{
-			PkgPath:   c.lp.ImportPath,
-			Name:      c.lp.Name,
-			Dir:       c.lp.Dir,
-			GoFiles:   goFiles(c.lp),
-			Imports:   slices.Sorted(slices.Values(c.lp.Imports)),
-			Errors:    errs,
-			Fset:      ld.fset,
-			Syntax:    files,
-			Types:     tpkg,
-			TypesInfo: info,
+		c.pkg = c.newPackage(ld, tpkg)
+		c.pkg.Errors = errs
+		c.pkg.Syntax = files
+		c.pkg.TypesInfo = info
+		if saved {
+			c.pkg.Key = c.key
 		}
+	}
+}
+
+// fromStore takes c's types from the store, and a repo package's share: it
+// needs both, or it's checked from source, since its walk needs the syntax.
+func (c *check) fromStore(ld *loader) bool {
+	var share []byte
+	if !c.lp.DepOnly {
+		share, c.saved = ld.cache.share(c.key)
+		if share == nil {
+			return false
+		}
+	}
+	tpkg := ld.cache.load(c.key, c.lp.ImportPath, ld.fset)
+	if tpkg == nil {
+		return false
+	}
+	c.types = tpkg
+	if share != nil {
+		c.pkg = c.newPackage(ld, tpkg)
+		c.pkg.Key = c.key
+		c.pkg.Share = share
+	}
+	return true
+}
+
+// newPackage is a repo package's Package, without what only checking gives.
+func (c *check) newPackage(ld *loader, tpkg *types.Package) *Package {
+	return &Package{
+		PkgPath: c.lp.ImportPath,
+		Name:    c.lp.Name,
+		Dir:     c.lp.Dir,
+		GoFiles: goFiles(c.lp),
+		Imports: slices.Sorted(slices.Values(c.lp.Imports)),
+		Fset:    ld.fset,
+		Types:   tpkg,
 	}
 }
 

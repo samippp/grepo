@@ -296,3 +296,111 @@ func TestFileIdentity(t *testing.T) {
 		}
 	}
 }
+
+const (
+	repoMain   = "example.com/loadfix"
+	repoBroken = "example.com/loadfix/broken" // type errors: never cached
+)
+
+// saveShares gives every repo package of res with a row a share naming it,
+// as the graph does after a load.
+func saveShares(t *testing.T, st *store.Store, res *Result) {
+	t.Helper()
+	shares := map[string][]byte{}
+	for _, p := range res.Packages {
+		if p.Key != "" {
+			shares[p.Key] = []byte("share of " + p.PkgPath)
+		}
+	}
+	if err := st.SaveShares(t.Context(), shares); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func pkg(res *Result, path string) *Package {
+	return res.Packages[slices.IndexFunc(res.Packages, func(p *Package) bool { return p.PkgPath == path })]
+}
+
+// A repo package with its row and a share comes from the store: types from
+// export data, the share, no syntax. One with errors gets no row.
+func TestRepoPackageFromStore(t *testing.T) {
+	dir := copyFixture(t)
+	st := openStore(t)
+	cold := mustLoad(t, dir, st)
+	if k := pkg(cold, repoBroken).Key; k != "" {
+		t.Errorf("%s has a key (%s) despite its errors", repoBroken, k)
+	}
+	saveShares(t, st, cold)
+
+	warm := mustLoad(t, dir, st)
+	if want := []string{uncached, repoBroken}; !slices.Equal(warm.Checked, want) {
+		t.Errorf("checked %v, want %v", warm.Checked, want)
+	}
+	p := pkg(warm, repoMain)
+	if string(p.Share) != "share of "+repoMain || p.Key != pkg(cold, repoMain).Key {
+		t.Errorf("share %q under %s; want the share saved under %s", p.Share, p.Key, pkg(cold, repoMain).Key)
+	}
+	if p.Syntax != nil || p.TypesInfo != nil {
+		t.Error("a package from the store has syntax or type information")
+	}
+	if p.Types == nil || p.Types.Path() != repoMain { // export data: main exports nothing, so its scope is empty
+		t.Errorf("types %v, want %s's", p.Types, repoMain)
+	}
+	if p.Name != "main" || len(p.GoFiles) == 0 || len(p.Imports) == 0 || p.Errors != nil {
+		t.Errorf("name %q, %d files, %d imports, errors %v: want what go list gives", p.Name, len(p.GoFiles), len(p.Imports), p.Errors)
+	}
+}
+
+// Editing a repo package, or a dependency it imports, checks it from source
+// again under a new key.
+func TestRepoPackageFromStoreAfterEdits(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		edit    func(t *testing.T, dir string)
+		recheck []string // besides repoMain, uncached and repoBroken
+	}{
+		{"repo package", func(t *testing.T, dir string) {
+			edit(t, filepath.Join(dir, "defined.go"), `h.Greet("all")`, `h.Greet("everyone")`)
+		}, nil},
+		{"its dependency", func(t *testing.T, dir string) {
+			edit(t, filepath.Join(dir, "dep/dep.go"), `p.Prefix + " " + name`, `p.Prefix + ": " + name`)
+		}, []string{"example.com/dep", "example.com/dep/wrap"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := copyFixture(t)
+			st := openStore(t)
+			cold := mustLoad(t, dir, st)
+			saveShares(t, st, cold)
+			tc.edit(t, dir)
+
+			got := mustLoad(t, dir, st)
+			want := slices.Sorted(slices.Values(append([]string{repoMain, uncached, repoBroken}, tc.recheck...)))
+			if !slices.Equal(got.Checked, want) {
+				t.Errorf("checked %v, want %v", got.Checked, want)
+			}
+			p := pkg(got, repoMain)
+			if p.Share != nil || p.Syntax == nil || p.Key == "" || p.Key == pkg(cold, repoMain).Key {
+				t.Errorf("share %q, syntax %v, key %q (was %q): want it checked from source under a new key",
+					p.Share, p.Syntax != nil, p.Key, pkg(cold, repoMain).Key)
+			}
+		})
+	}
+}
+
+// A repo package checked again because its row has no share yet doesn't
+// rewrite the row: its key fixes what's in it.
+func TestSavedRowNotRewritten(t *testing.T) {
+	dir := copyFixture(t)
+	st := openStore(t)
+	key := pkg(mustLoad(t, dir, st), repoMain).Key
+	if err := st.Save(t.Context(), []store.Row{{Key: key, ImportPath: repoMain, Export: []byte("sentinel")}}, nil); err != nil {
+		t.Fatal(err)
+	}
+	res := mustLoad(t, dir, st)
+	if !slices.Contains(res.Checked, repoMain) || pkg(res, repoMain).Key != key {
+		t.Fatalf("%s not checked again under %s", repoMain, key)
+	}
+	if got, _, _ := st.Export(t.Context(), key); string(got) != "sentinel" {
+		t.Error("the row was written again")
+	}
+}
