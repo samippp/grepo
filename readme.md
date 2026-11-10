@@ -65,11 +65,16 @@ internal/vtadiff/  dev tool: compares the call graph with x/tools' VTA
   - **M1e:** reads and escapes of package vars and struct fields, plus `Through` on calls, for `impact`, dead-field detection and safer mutability claims ✅
 - **M2: store + query layer** (modeled on gopls' cache)
   - **M2a: incremental store**
+    - own loader: `go list` + `go/types`, dependencies type-checked from source without bodies ✅
+    - SQLite store, one row per package, keyed by a hash of its files, its dependencies' keys, the build config and grepo's binary ✅
+    - implementations from per-package method sets and interfaces, matched across packages afterwards ✅
+    - edits rebuild the changed package and its reverse imports; everything else is reused ✅
+    - rescoped (#44): the store keeps each package's graph share, the part that costs, and types come from source. Caching deep export data cost more than it saved: on Kubernetes, filling the store took 21.1s against 8.6s without it, and a warm run saved ~1.3s
+      - a repo package from the store is type-checked without bodies and its share decoded; no export data
+      - dependencies' export data only where it measurably beats checking them without bodies
+      - warm runs: rows marked used only when stale, shares decoded in parallel; pruning by last use
+      - targets: a warm run clearly faster than `--no-cache`, filling the store within ~20% of it, a run after an edit never slower
     - metadata-only first load (`go list`, no type-checking): package graph right away
-    - SQLite store, one entry per package, keyed by a hash of its files, its dependencies' keys, the build config and grepo's analysis version (so an upgrade that changes the graph rebuilds old entries)
-    - edits rebuild the changed package and its reverse imports; everything else is reused
-    - implementations from per-package method sets and interfaces, matched across packages afterwards
-    - own loader: `go list` + `go/types`, dependencies type-checked from source without bodies, export data cached per package
   - **M2b: query layer**
     - short names (`Store.users`, `store.Get`) resolved to IDs, with ambiguity handling
     - defaults to the package in the current directory
