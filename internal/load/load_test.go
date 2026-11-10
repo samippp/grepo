@@ -27,7 +27,7 @@ func TestFromGoListMatchesGoPackages(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			got, err := fromGoList(t.Context(), dir, log)
+			got, err := fromGoList(t.Context(), dir, nil, log)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -36,10 +36,14 @@ func TestFromGoListMatchesGoPackages(t *testing.T) {
 			}
 			// go/packages compiles for export data and adds the compiler's
 			// output as one more error, repeating the type errors. We don't compile.
+			// Its export data also copies an interface defined from another
+			// named one (dep/named), so calls through it use copied methods;
+			// checked from source, they're the other interface's.
+			copied := func(l string) bool { return strings.HasPrefix(l, "example.com/loadfix: use defined.go:") }
 			wantLines := slices.DeleteFunc(describe(want), func(l string) bool {
-				return strings.Contains(l, ": error -: # ")
+				return strings.Contains(l, ": error -: # ") || copied(l)
 			})
-			diff(t, describe(got), wantLines)
+			diff(t, slices.DeleteFunc(describe(got), copied), wantLines)
 		})
 	}
 }
@@ -52,7 +56,7 @@ func TestStdlibPositions(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	own, err := fromGoList(t.Context(), "testdata/mod", log)
+	own, err := fromGoList(t.Context(), "testdata/mod", nil, log)
 	if err != nil {
 		t.Fatal(err)
 	}

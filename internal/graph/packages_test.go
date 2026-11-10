@@ -14,7 +14,7 @@ import (
 )
 
 func TestBuildPackageGraph(t *testing.T) {
-	res, err := load.Load(context.Background(), "testdata/simple", slog.New(slog.DiscardHandler))
+	res, err := load.Load(context.Background(), "testdata/simple", nil, slog.New(slog.DiscardHandler))
 	if err != nil {
 		t.Fatal(err)
 	}
