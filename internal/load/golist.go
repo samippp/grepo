@@ -331,7 +331,7 @@ func (c *check) fromStore(ld *loader) bool {
 			return false
 		}
 	}
-	tpkg := ld.cache.load(c.key, c.lp.ImportPath, ld.fset)
+	tpkg := ld.cache.load(c.key, c.lp.ImportPath, ld.fset, c.deps(ld))
 	if tpkg == nil {
 		return false
 	}
@@ -342,6 +342,32 @@ func (c *check) fromStore(ld *loader) bool {
 		c.pkg.Share = share
 	}
 	return true
+}
+
+// deps is the types of every package c imports, directly or not, by path:
+// all that reading its export data can reference. They're done, so their
+// types are set (their done channels closed before c's imports' did).
+func (c *check) deps(ld *loader) map[string]*types.Package {
+	deps := map[string]*types.Package{}
+	seen := map[string]bool{}
+	var visit func(path string)
+	visit = func(path string) {
+		d := ld.checks[path]
+		if d == nil || seen[path] {
+			return
+		}
+		seen[path] = true
+		if d.types != nil {
+			deps[path] = d.types
+		}
+		for _, imp := range d.lp.Imports {
+			visit(imp)
+		}
+	}
+	for _, imp := range c.lp.Imports {
+		visit(imp)
+	}
+	return deps
 }
 
 // newPackage is a repo package's Package, without what only checking gives.

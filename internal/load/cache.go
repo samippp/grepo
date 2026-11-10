@@ -119,18 +119,17 @@ var grepoVersion = sync.OnceValues(func() (string, error) {
 	return hex.EncodeToString(h.Sum(nil)), nil
 })
 
-// cache is one load's use of the store: it reads dependencies' export data
-// and collects what to write back, saved in one transaction at the end.
+// cache is one load's use of the store: it reads packages' export data and
+// collects what to write back, saved in one transaction at the end.
 type cache struct {
 	ctx    context.Context
 	st     *store.Store
 	root   string
 	config keyInput // the load config fields only
 
-	mu      sync.Mutex
-	imports map[string]*types.Package // every package's types so far, for gcexportdata
-	rows    []store.Row
-	used    []string // keys read from the store
+	mu   sync.Mutex
+	rows []store.Row
+	used []string // keys read from the store
 }
 
 func newCache(ctx context.Context, st *store.Store, root string, env goEnv) (*cache, error) {
@@ -145,7 +144,6 @@ func newCache(ctx context.Context, st *store.Store, root string, env goEnv) (*ca
 		config: keyInput{
 			Grepo: grepo, GOOS: env.GOOS, GOARCH: env.GOARCH, GoVersion: env.GOVERSION, ModCache: env.GOMODCACHE,
 		},
-		imports: map[string]*types.Package{},
 	}, nil
 }
 
@@ -201,20 +199,25 @@ func (ca *cache) key(lp *listed, identity string, srcs []source, checks map[stri
 	return packageKey(k), readable
 }
 
-// load returns the types cached under key, or nil. Imports are read first
-// (dependency order), so they come from the same map and share objects.
-func (ca *cache) load(key, path string, fset *token.FileSet) *types.Package {
+// load returns the types cached under key, or nil. deps is the types of
+// every package path imports, directly or not, all done (dependency order):
+// what its export data can reference, so the read shares their objects.
+//
+// A read adds the package it reads to deps, and a new package for each one
+// it references but doesn't find: there are none, as deps holds them all.
+// Each has every object the read can look up, so the read changes no other
+// package, and reads run in parallel.
+func (ca *cache) load(key, path string, fset *token.FileSet, deps map[string]*types.Package) *types.Package {
 	export, ok, err := ca.st.Export(ca.ctx, key)
 	if err != nil || !ok {
 		return nil
 	}
-	ca.mu.Lock()
-	defer ca.mu.Unlock()
-	tpkg, err := gcexportdata.Read(bytes.NewReader(export), fset, ca.imports, path)
+	tpkg, err := gcexportdata.Read(bytes.NewReader(export), fset, deps, path)
 	if err != nil {
-		delete(ca.imports, path) // a half-read package mustn't stand in for the one we'll check
 		return nil
 	}
+	ca.mu.Lock()
+	defer ca.mu.Unlock()
 	ca.used = append(ca.used, key)
 	return tpkg
 }
@@ -229,9 +232,8 @@ func (ca *cache) share(key string) (share []byte, saved bool) {
 	return share, saved
 }
 
-// checked records a package checked from source: later reads of export data
-// that mention it use these types, and a cacheable one is written back
-// unless its row is there already (saved: the key fixes what's in it).
+// checked records a package checked from source: a cacheable one is written
+// back unless its row is there already (saved: the key fixes what's in it).
 // It reports whether the package has a row after the load.
 func (ca *cache) checked(key string, tpkg *types.Package, fset *token.FileSet, cacheable, saved bool) bool {
 	var export bytes.Buffer
@@ -242,7 +244,6 @@ func (ca *cache) checked(key string, tpkg *types.Package, fset *token.FileSet, c
 	}
 	ca.mu.Lock()
 	defer ca.mu.Unlock()
-	ca.imports[tpkg.Path()] = tpkg
 	if cacheable && !saved {
 		ca.rows = append(ca.rows, store.Row{Key: key, ImportPath: tpkg.Path(), Export: export.Bytes()})
 	}
