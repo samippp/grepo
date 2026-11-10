@@ -221,6 +221,8 @@ func buildPackage(pkg *load.Package, root string, repo map[string]bool) *callGra
 }
 
 // sort puts every list in a stable order, whatever order packages were built in.
+// Calls and accesses can tie (one line, one caller, one callee or target):
+// those come from one package's walk, and keep its order.
 func (g *CallGraph) sort() {
 	slices.SortFunc(g.Types, func(x, y Type) int {
 		return cmp.Compare(x.ID, y.ID)
@@ -234,14 +236,14 @@ func (g *CallGraph) sort() {
 	slices.SortFunc(g.Implementations, func(x, y Implementation) int {
 		return cmp.Or(cmp.Compare(x.Type, y.Type), cmp.Compare(x.Interface, y.Interface))
 	})
-	slices.SortFunc(g.Calls, func(x, y FunctionCall) int {
+	slices.SortStableFunc(g.Calls, func(x, y FunctionCall) int {
 		return cmp.Or(
 			cmp.Compare(x.Caller, y.Caller),
 			cmp.Compare(x.Pos, y.Pos),
 			cmp.Compare(x.Callee, y.Callee),
 		)
 	})
-	slices.SortFunc(g.Accesses, func(x, y Access) int {
+	slices.SortStableFunc(g.Accesses, func(x, y Access) int {
 		return cmp.Or(
 			cmp.Compare(x.Accessor, y.Accessor),
 			cmp.Compare(x.Pos, y.Pos),
