@@ -1,8 +1,9 @@
 // analyze.go implements `grepo analyze [github-link | path] [-o file]`.
 //
 // Flow: source.Resolve (clone the GitHub repo, or use the local path) →
-// load.Load (run the go toolchain) → graph.BuildPackageGraph and
-// graph.BuildCallGraph (reshape the result) → JSON to stdout or the --out file. Each stage logs what it did and
+// load.Load (run the go toolchain, walking each repo package for the call
+// graph as soon as it's checked) → graph.BuildPackageGraph, and merging the
+// call graph → JSON to stdout or the --out file. Each stage logs what it did and
 // how long it took. Errors in individual packages are logged as warnings rather
 // than failing the run, so partly broken repos still produce output.
 //
@@ -18,6 +19,7 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"path/filepath"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -58,17 +60,25 @@ func newAnalyzeCmd(a *app) *cobra.Command {
 			}
 
 			var res *load.Result
-			var st *store.Store       // nil: no store, or --loader packages
-			if loader == "packages" { // the go/packages path, for comparing loaders
+			var st *store.Store            // nil: no store, or --loader packages
+			var cb *graph.CallGraphBuilder // nil: the call graph is built after the load
+			if loader == "packages" {      // the go/packages path, for comparing loaders
 				res, _, err = load.GoPackages(ctx, repo.Dir, log)
 			} else {
+				// Each repo package is walked as soon as its types are ready,
+				// so its syntax can be dropped instead of held until the load ends.
+				var dir string
+				if dir, err = filepath.Abs(repo.Dir); err != nil { // what Load reports as Result.Dir
+					return err
+				}
+				cb = graph.NewCallGraphBuilder(dir)
 				if !noCache {
 					st = openStore(log)
 					if st != nil {
 						defer st.Close()
 					}
 				}
-				res, err = load.Load(ctx, repo.Dir, st, log, nil)
+				res, err = load.Load(ctx, dir, st, log, cb.Add)
 			}
 			if err != nil {
 				return err
@@ -80,7 +90,13 @@ func newAnalyzeCmd(a *app) *cobra.Command {
 				"packages", len(g.Packages), "edges", len(g.Edges), "took", logging.Since(t))
 
 			t = time.Now()
-			cg, shares, err := graph.BuildCallGraph(res)
+			var cg *graph.CallGraph
+			var shares map[string][]byte
+			if cb != nil {
+				cg, shares, err = cb.CallGraph() // packages were walked during the load: this merges them
+			} else {
+				cg, shares, err = graph.BuildCallGraph(res)
+			}
 			if err != nil {
 				return fmt.Errorf("%w (--no-cache skips the store)", err)
 			}
