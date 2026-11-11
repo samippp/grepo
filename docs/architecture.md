@@ -5,16 +5,17 @@ How grepo turns a Go repository into a graph, how the graph is shaped, and the d
 ## 1. Pipeline
 
 ```
-GitHub link ──► source ──► load ──► graph ──► JSON (stdout / -o)
-               clone       go/packages:      BuildPackageGraph  → packages + import edges
-               + commit    syntax trees,     BuildCallGraph     → types, variables, functions,
-                           types, TypesInfo                        calls, implementations
+GitHub link ──► source ──► load ─────────────────► graph ──► JSON (stdout / -o)
+               clone       go list + go/types;      BuildPackageGraph  → packages + import edges
+               + commit    each repo package is     CallGraphBuilder   → types, variables, functions,
+                           walked once it's checked   (Add per package,   calls, implementations
+                                                       CallGraph merges)
 ```
 
 | Package | Role |
 |---|---|
 | `internal/source` | GitHub link → shallow clone in the user cache, plus the commit hash. Local paths work too. |
-| `internal/load` | Loads packages through `go/packages` with syntax trees and full type information. |
+| `internal/load` | Loads packages with `go list` and `go/types`, handing each repo package to a walk once its types are ready (`go/packages` for `vta-diff` and `--loader packages`). |
 | `internal/graph` | Pure transformation: no I/O, no logging, sorted deterministic output. |
 | `internal/logging` | `slog` setup; logs to stderr, results to stdout. |
 | `internal/cli` | `analyze`, plus the hidden dev command `vta-diff`. |
@@ -131,8 +132,8 @@ Example: what can `lookup` reach through `g.Get(1)`?
 ## 4. How it's built
 
 ```
-BuildCallGraph
-  for each package: buildPackage (fresh builder, nothing shared but the repo's package paths)
+CallGraphBuilder.Add (a load.Walk: each repo package during the load; BuildCallGraph runs a Result's packages through one)
+  buildPackage (fresh builder, nothing shared but the repo's package paths)
   → for each file → declaration:
     FuncDecl → handleFuncDecl      Function node (functions.go; ID via assignFuncDeclID, Owner via receiverOwner)
                 └ walk      recursive descent (walk.go): walk = statements, expr = values,
@@ -279,11 +280,22 @@ BuildCallGraph
 - Package-level calls use the package as the caller: an existing node, nothing synthetic.
 
 ### Per-package building (M2a)
-- `buildPackage(pkg, root, repo)` walks one package with a fresh builder; `BuildCallGraph` merges the results, matches implementations and sorts. The cache stores one package's share, so a share can't depend on any other package's walk.
+- `buildPackage(pkg, root, repo)` walks one package with a fresh builder; `CallGraphBuilder.Add` keeps its share, and `CallGraph` merges the shares in package-path order, matches implementations and sorts. The cache stores one package's share, so a share can't depend on any other package's walk.
 - What a share needs from outside is which of the package and its imports are repo packages (which consts are read), passed in as `repoImports`. A const is read only where it's named, so it's declared in the package or one it imports: a cache key built from its imports' keys covers it. The walk gets only that set, not every repo path, so it can't come to depend on more. Closure, init and local type numbering is already per declaration or file, so a fresh builder gives the same IDs.
 - Local type IDs are merged after the walk: an implementation can pair a type and an interface from different packages, and `CallGraph.TypeID` / `FuncID` serve every package. A local type can't be named outside its function, so another package's walk never needs its ID; if it did, `typeID` gives `pkg.Name#?`.
 - Implementations are matched from per-package summaries after the merge (next section).
 - Tests: each package built alone holds only nodes and edges in its own files, and the shares together are the whole graph; reversing the package order changes nothing; no `#?` IDs; a package's share is the same with every repo path as with only `repoImports` (`store/consts.go` reads `model.MaxTag`).
+
+### Walking during the load (M2a, #35)
+- Why: on Kubernetes, about two-thirds of the live heap after a load was repo packages' syntax and `TypesInfo` (902 MB live, 302 MB with them dropped), all held until the walk started after the load, and every GC cycle scanned it. The walk needs a package only while walking it.
+- `load.Load` takes an optional `Walk func(pkg, repo)` (`load` can't import `graph`), run on each repo package as soon as its types are ready: checked from source, with `Syntax` and `TypesInfo`; from the store, with its `Share`. Load then drops all three and keeps `Types`. A package's done channel closes before its walk, so dependents don't wait on it, and walks run alongside checking.
+- `CallGraphBuilder.Add` is the walk: it walks the package or decodes its share, encodes the share for the store when the package has a row, and keeps only the share, never the walk's builder, whose maps are keyed by syntax nodes. `CallGraph` merges. The merge order doesn't change the output: tied calls sort stably, in source order (#40).
+- Graphs built during a load have no closure IDs (keyed by `*ast.FuncLit`): `ClosureID` returns `""`. `BuildCallGraph(res)` runs a Result's packages through a builder that keeps them, for `vta-diff`; `--loader packages` builds after the load that way too.
+- Not taken: walking in parallel after the load. As fast or faster in #35's runs, but every package's syntax and walk state are held at once: peak heap 2.0–2.4 GB against 1.5–1.9 GB walking serially.
+- Measured (Kubernetes v1.37.2, 1,470 repo packages of 3,675, `analyze` after #43 and #45; three alternating runs, median and range): `--no-cache` 7.10s (7.05–7.24) → 5.68s (5.68–9.30), the call graph 1.91s → 0.41s (now only the merge), the load 3.21s → 3.57s (the walks are in it), the same CPU time (24.6s), peak heap 1.89 → 1.33 GB, peak RSS 2.45 → 1.82 GB, 30 → 36 GC cycles. Warm (59 checked): 6.46s (6.39–7.51) → 5.97s (5.73–6.64), the call graph 0.91s → 0.31s, peak heap 1.08 GB both ways, RSS 1.64 → 1.51 GB. Output byte-identical across both builds, filling, `--no-cache` and warm. Before #43 the time was within noise of the walk after the load (warm median 14.7s → 14.0s), and the live heap stayed at 300–440 MB through the load.
+- What's left of the peak: JSON output, which `encoding/json` builds whole (223 MB indented for Kubernetes) before writing it (#38).
+- To check: filling an empty store took 64.5s walking after the load and 77.5s during it, single runs with the store under `/tmp`, against the 21.1s in Store (below). Not explained yet; #44 changes what filling writes.
+- Tests: `TestWalk`: each repo package is walked once, with syntax and type information, both nil afterwards with `Types` kept, and `repo` is exactly the repo packages. `TestWalkFromStore`: a package from the store is walked with its share and no syntax, the broken one from source, and no share is kept. `TestCallGraphBuilderMatchesBuildCallGraph`: byte-identical JSON on the fixture. `TestCallGraphBuilderKeepsNoSyntax`: after the graph and a GC, no walked `*ast.File` or `*ast.FuncLit` is reachable (weak pointers); with closure IDs kept, it fails. The store's graph tests run both ways, after the load and during it.
 
 ### Implementations from summaries (M2a)
 - A cached package has no type-checker objects, so `types.Implements` can't run on it. Each package stores a `typeSummary` instead: its concrete types' value and pointer method sets, and its interfaces' method sets (embedded ones included), as method key → signature key. Matching reruns every time over all summaries, so a new interface in one package is matched against unchanged types in others.
@@ -301,14 +313,14 @@ BuildCallGraph
 - Each package's export data (`gcexportdata`) is cached next to its graph entry, so unchanged packages are imported from the cache and an edit re-checks only the changed package and its reverse imports.
 - The importer decides what a missing package becomes, so the partial pass (M2c) uses the same path.
 - Given up: reusing the user's warm `go build` cache, and the Go tooling quirks `go/packages` handles (build tags, cgo files, vendor, `go.work`, overlays) that are now ours to get right through `go list`.
-- To check: memory on large repos, and per-package errors (cgo especially).
+- To check: per-package errors (cgo especially). Memory on large repos: repo packages' syntax is dropped once walked (Walking during the load).
 - `graph` reads `load.Package`, never `go/packages` (#31). `vta-diff` stays on `go/packages` through `load.GoPackages`, as an independent check.
 - `go list -json -deps -e ./...`, no `-compiled`: cgo files are type-checked as written with a fake `"C"` (`types.Config.FakeImportC`), so no C compiler is needed and positions stay in real files. In caddy, bubbletea and lo, cgo is only in stdlib dependencies, whose bodies and errors are dropped.
 - Matched to `go/packages`: absolute file paths (positions), sizes from the target's `GOARCH` (`unsafe.Sizeof` consts end up in the output), and each module's `go` version (which language features type-check).
 - Not matched: `go/packages` adds the compiler's output as one more error on a broken package, repeating its type errors. We don't compile, so it's gone.
 - Not matched: an interface defined from another named interface (`type List metav1.ListInterface`). Checked from source, its methods are the other interface's; compiler export data copies the interface, so through `go/packages` they're new methods of `List`, and interface calls through it name a different callee. Source is right. caddy, bubbletea and lo have none; Kubernetes does.
 - Stdlib files are parsed under the name `$GOROOT/src/...`, as compiler export data names them: a field of `type T tls.ConnectionState` sits at `$GOROOT/src/crypto/tls/common.go:254`, whatever the install path.
-- A package is parsed only once its imports are checked, one per core: only the packages in progress hold syntax trees (caddy peaked at 778 MB when every package parsed up front).
+- A package is parsed only once its imports are checked, one per core: only the packages in progress hold syntax trees (caddy peaked at 778 MB when every package parsed up front), and a repo package's go once it's walked.
 - Measured (`analyze`, same output both ways): empty build cache, caddy 3.7s / 355 MB vs `go/packages` 32.9s / 369 MB; bubbletea 0.7s vs 6.3s; lo 0.7s vs 4.1s. Warm, `go/packages` reads compiled export data and is a little ahead (caddy 1.1s / 226 MB vs 1.3s / 358 MB); cached export data (step 4) covers that case.
 - `analyze --loader=packages` (hidden) loads through `go/packages`, for comparing the two on new repos.
 - Tests: `TestStdlibPositions` pins the `$GOROOT` naming for both loaders. `internal/load/testdata/mod` adds what `testdata/simple` lacks (a dependency outside the module through `replace`, a build-tagged file, a test file, `unsafe` sizes, `go 1.21` with a go1.22 feature, type errors). On both fixtures, the loader must describe exactly as `go/packages` does: packages, files, imports, errors, scope, file versions, and every `Defs`, `Uses`, `Implicits`, `Selections`, `Instances`, `Types` and `Scopes` entry, by position.
@@ -320,7 +332,7 @@ BuildCallGraph
 - Built so far, in two PRs, which the plan above reworks. First, dependencies (#34): their export data is cached, repo packages are still checked and walked every run (they need syntax and `TypesInfo`). Then repo packages (#42): their export data and share are cached, and only changed ones and their reverse imports are parsed.
 - `internal/store`: one shared SQLite database, `os.UserCacheDir()/grepo/store.db`, through `modernc.org/sqlite` (pure Go: no C compiler, like the loader). Keys hold no machine paths beyond `GOMODCACHE` and, for packages whose files are hashed, the repo root (below), so the stdlib and common modules are shared across repos. WAL and a busy timeout for concurrent runs.
 - One table, one row per key: `key`, `import_path`, `last_used`, `export` (`gcexportdata`), and for repo packages `share`: the walk's lists and type summary as JSON, without what's keyed by pointers (local type and closure IDs, which only `vta-diff` uses, and it doesn't use the store). No compression until a measurement asks for it.
-- `load` reads and writes export data, and reads a repo package's share with it: a repo package comes from the store only when its row has both, since without a share it must be walked, and walking needs its syntax. It then has `Types` (its exported API only, what importers need), `Key` and `Share`, and no `Syntax` or `TypesInfo`. `graph` decodes shares and encodes the ones it walks (`BuildCallGraph` returns them; `load` can't import `graph`), and `analyze` saves them with `SaveShares` after building. Rows are written in one transaction at the end of a load, shares in another after the graph.
+- `load` reads and writes export data, and reads a repo package's share with it: a repo package comes from the store only when its row has both, since without a share it must be walked, and walking needs its syntax. It then has `Types` (its exported API only, what importers need), `Key` and `Share`, and no `Syntax` or `TypesInfo`. The walk (`CallGraphBuilder.Add`) decodes each share as `load` hands its package over and encodes the ones it walks (`CallGraph` returns them; `load` can't import `graph`), and `analyze` saves them with `SaveShares` after the merge. Rows are written in one transaction at the end of a load, shares in another after the graph.
 - A repo package checked again because its row has no share (the graph's save failed, or it hasn't run) doesn't rewrite the row: its key fixes what's in it.
 - Key (chained: a package's key holds its imports' keys, so a change anywhere below rebuilds it):
   - grepo's version: a hash of its binary. Always right, including the `go/types` it's built with; an upgrade or rebuild means a cold cache.

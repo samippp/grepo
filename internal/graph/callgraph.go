@@ -10,6 +10,7 @@ import (
 	"maps"
 	"slices"
 	"strconv"
+	"sync"
 
 	"github.com/samippp/grepo/internal/load"
 )
@@ -158,42 +159,109 @@ func (g *CallGraph) TypeID(tn *types.TypeName) string { return g.ids.typeID(tn) 
 //   - external calls kept; interface calls point at the interface method
 //   - dynamic calls have no Callee; one edge per call site; output sorted
 //
-// A package from the store (Share set) isn't walked: its share is decoded,
-// and FuncID, TypeID and ClosureID don't know its local types or closures.
-// shares holds the packages walked that have a row (Key set), encoded for the
-// store; without a store there are none. err is a share that can't be decoded.
+// It needs every package's syntax, or its share from the store, and keeps
+// closure IDs for ClosureID. A package from the store (Share set) isn't
+// walked: its share is decoded, and FuncID, TypeID and ClosureID don't know
+// its local types or closures. shares holds the packages walked that have a
+// row (Key set), encoded for the store; without a store there are none. err
+// is a share that can't be decoded. Building with a CallGraphBuilder during
+// the load holds less.
 func BuildCallGraph(res *load.Result) (g *CallGraph, shares map[string][]byte, err error) {
 	repo := map[string]bool{}
 	for _, pkg := range res.Packages {
 		repo[pkg.PkgPath] = true
 	}
+	cb := NewCallGraphBuilder(res.Dir)
+	cb.keepClosures = true
+	for _, pkg := range res.Packages {
+		cb.Add(pkg, repo)
+	}
+	return cb.CallGraph()
+}
 
+// CallGraphBuilder builds the call graph one package at a time. Add is a
+// load.Walk: each package is walked as soon as it's checked, or its share
+// decoded when it came from the store, and nothing of its syntax is kept, so
+// the loader can drop it. The graph has no closure IDs (ClosureID returns "").
+type CallGraphBuilder struct {
+	root         string // absolute: the Result's Dir
+	keepClosures bool   // BuildCallGraph: closure IDs, keyed by syntax
+
+	mu       sync.Mutex
+	shares   map[string]*share       // by package path
+	ids      idTable                 // walked packages' local type IDs
+	closures map[*ast.FuncLit]string // with keepClosures
+	encoded  map[string][]byte       // walked packages' shares, by row key, for the store
+	err      error                   // the first share that couldn't be decoded
+}
+
+// NewCallGraphBuilder starts a graph of the repo at root, an absolute path:
+// positions are relative to it.
+func NewCallGraphBuilder(root string) *CallGraphBuilder {
+	return &CallGraphBuilder{
+		root:     root,
+		shares:   map[string]*share{},
+		ids:      idTable{},
+		closures: map[*ast.FuncLit]string{},
+		encoded:  map[string][]byte{},
+	}
+}
+
+// Add walks pkg, or decodes its share; repo holds every repo package's path.
+// Safe for concurrent use.
+func (cb *CallGraphBuilder) Add(pkg *load.Package, repo map[string]bool) {
+	if pkg.Share != nil {
+		s, err := decodeShare(pkg.Share)
+		cb.mu.Lock()
+		defer cb.mu.Unlock()
+		if err != nil {
+			if cb.err == nil {
+				cb.err = fmt.Errorf("reading %s's graph share from the store: %w", pkg.PkgPath, err)
+			}
+			return
+		}
+		cb.shares[pkg.PkgPath] = s
+		return
+	}
+
+	b := buildPackage(pkg, cb.root, repoImports(pkg, repo))
+	s := b.share()
+	var encoded []byte
+	if pkg.Key != "" {
+		encoded = s.encode()
+	}
+	cb.mu.Lock()
+	defer cb.mu.Unlock()
+	cb.shares[pkg.PkgPath] = s
+	maps.Copy(cb.ids, b.ids)
+	if cb.keepClosures {
+		maps.Copy(cb.closures, b.closures)
+	}
+	if encoded != nil {
+		cb.encoded[pkg.Key] = encoded
+	}
+}
+
+// CallGraph merges the packages added so far and matches implementations
+// across them. shares and err are as BuildCallGraph's.
+func (cb *CallGraphBuilder) CallGraph() (g *CallGraph, shares map[string][]byte, err error) {
+	cb.mu.Lock()
+	defer cb.mu.Unlock()
+	if cb.err != nil {
+		return nil, nil, cb.err
+	}
 	g = &CallGraph{
 		Types:     []Type{},
 		Variables: []Variable{},
 		Functions: []Function{},
 		Calls:     []FunctionCall{},
 		Accesses:  []Access{},
-		ids:       idTable{},
-		closures:  map[*ast.FuncLit]string{},
+		ids:       maps.Clone(cb.ids),
+		closures:  maps.Clone(cb.closures),
 	}
-	shares = map[string][]byte{}
 	var summaries []typeSummary
-	for _, pkg := range res.Packages {
-		var s *share
-		if pkg.Share != nil {
-			if s, err = decodeShare(pkg.Share); err != nil {
-				return nil, nil, fmt.Errorf("reading %s's graph share from the store: %w", pkg.PkgPath, err)
-			}
-		} else {
-			b := buildPackage(pkg, res.Dir, repoImports(pkg, repo))
-			maps.Copy(g.ids, b.ids)
-			maps.Copy(g.closures, b.closures)
-			s = b.share()
-			if pkg.Key != "" {
-				shares[pkg.Key] = s.encode()
-			}
-		}
+	for _, path := range slices.Sorted(maps.Keys(cb.shares)) {
+		s := cb.shares[path]
 		g.Types = append(g.Types, s.Types...)
 		g.Variables = append(g.Variables, s.Variables...)
 		g.Functions = append(g.Functions, s.Functions...)
@@ -204,7 +272,7 @@ func BuildCallGraph(res *load.Result) (g *CallGraph, shares map[string][]byte, e
 	// After the merge: a type and an interface it implements can be in different packages.
 	g.Implementations = matchImplementations(summaries)
 	g.sort()
-	return g, shares, nil
+	return g, maps.Clone(cb.encoded), nil
 }
 
 // share is one package's part of the graph, as the store keeps it: what its

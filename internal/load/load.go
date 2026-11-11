@@ -10,7 +10,9 @@
 // loaded, test files are skipped, and nested modules are not followed.
 //
 // Each package comes back with its parsed syntax trees and type information,
-// which the graph package walks to build the call graph.
+// which the graph package walks to build the call graph. Or Load hands each
+// repo package to a Walk as soon as its types are ready, and drops its syntax
+// and type information after: a large repo's are too big to hold all at once.
 //
 // Load is grepo's own loader (golist.go). GoPackages loads the same through
 // golang.org/x/tools/go/packages, for vta-diff, which builds SSA from it, and
@@ -42,7 +44,8 @@ type Result struct {
 	Checked  []string // import paths type-checked from source, sorted; the rest came from the store
 }
 
-// Package is one of the repo's packages, type-checked.
+// Package is one of the repo's packages, type-checked. After a Walk, Syntax,
+// TypesInfo and Share are nil.
 type Package struct {
 	PkgPath string
 	Name    string
@@ -68,13 +71,21 @@ type Package struct {
 const mode = packages.NeedName | packages.NeedFiles | packages.NeedImports | packages.NeedModule |
 	packages.NeedSyntax | packages.NeedTypes | packages.NeedTypesInfo
 
+// Walk reads one repo package: its syntax and type information when it was
+// checked from source, its Share when it came from the store. repo holds
+// every repo package's import path; it's shared, so don't change it. Walks
+// run concurrently, each while its package's dependents are being checked.
+type Walk func(pkg *Package, repo map[string]bool)
+
 // Load loads every package under dir (the equivalent of `go list ./...`).
 // Packages that fail to load are logged as warnings and still returned, with
 // their Errors field set. With a store, dependencies unchanged since an
 // earlier load come from it instead of being type-checked; nil loads
-// everything from source.
-func Load(ctx context.Context, dir string, st *store.Store, log *slog.Logger) (*Result, error) {
-	return fromGoList(ctx, dir, st, log)
+// everything from source. With a walk, it runs on each repo package as soon
+// as its types are ready, and Load then drops the package's Syntax,
+// TypesInfo and Share; nil keeps them.
+func Load(ctx context.Context, dir string, st *store.Store, log *slog.Logger, walk Walk) (*Result, error) {
+	return fromGoList(ctx, dir, st, log, walk)
 }
 
 // GoPackages loads like Load, through go/packages, and also returns its
