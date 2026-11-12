@@ -1,12 +1,15 @@
 package graph
 
 import (
+	"bytes"
 	"cmp"
+	"compress/flate"
 	"encoding/json"
 	"fmt"
 	"go/ast"
 	"go/token"
 	"go/types"
+	"io"
 	"maps"
 	"slices"
 	"strconv"
@@ -298,22 +301,56 @@ func (b *callGraphBuilder) share() *share {
 }
 
 // encode is s as JSON, which keeps nil and empty lists apart, as the
-// graph's own JSON does.
+// graph's own JSON does, compressed with flate. Writing a share costs its
+// bytes, flushed to disk by the store's checkpoint, and JSON compresses well:
+// Kubernetes' 171 MB of shares are 12.7 MB at flate's best speed.
 func (s *share) encode() []byte {
 	data, err := json.Marshal(s)
 	if err != nil {
 		panic(err) // strings, bools and lists of them always marshal
 	}
-	return data
+	var buf bytes.Buffer
+	w := flateWriters.Get().(*flate.Writer)
+	defer flateWriters.Put(w)
+	w.Reset(&buf)
+	if _, err := w.Write(data); err != nil {
+		panic(err) // a bytes.Buffer doesn't fail
+	}
+	if err := w.Close(); err != nil {
+		panic(err)
+	}
+	return buf.Bytes()
 }
 
 func decodeShare(data []byte) (*share, error) {
+	r := flateReaders.Get().(io.ReadCloser)
+	defer flateReaders.Put(r)
+	if err := r.(flate.Resetter).Reset(bytes.NewReader(data), nil); err != nil {
+		return nil, err
+	}
+	data, err := io.ReadAll(r)
+	if err != nil {
+		return nil, err
+	}
 	s := new(share)
 	if err := json.Unmarshal(data, s); err != nil {
 		return nil, err
 	}
 	return s, nil
 }
+
+// A flate writer holds about a megabyte of state, and shares are encoded and
+// decoded one package at a time, so writers and readers are reused.
+var (
+	flateWriters = sync.Pool{New: func() any {
+		w, err := flate.NewWriter(nil, flate.BestSpeed)
+		if err != nil {
+			panic(err) // BestSpeed is a valid level
+		}
+		return w
+	}}
+	flateReaders = sync.Pool{New: func() any { return flate.NewReader(bytes.NewReader(nil)) }}
+)
 
 // buildPackage walks one package. Its output depends only on pkg, the repo
 // root and which of pkg and its imports are repo packages (repoImports), so

@@ -2,6 +2,7 @@ package graph
 
 import (
 	"bytes"
+	"compress/flate"
 	"encoding/json"
 	"io/fs"
 	"log/slog"
@@ -114,19 +115,56 @@ func TestCallGraphFromStore(t *testing.T) {
 // A share the store holds but can't be decoded fails the build, naming the
 // package: there's no syntax to walk instead.
 func TestCallGraphBadShare(t *testing.T) {
-	for _, way := range ways {
-		t.Run(way.name, func(t *testing.T) {
-			st := openStore(t)
-			res, _ := loadAndBuild(t, st, way.during)
-			bad := res.Packages[0]
-			if err := st.SaveShares(t.Context(), map[string][]byte{bad.Key: []byte("{not json")}); err != nil {
-				t.Fatal(err)
-			}
-			_, _, _, err := build(t, "testdata/simple", st, way.during)
-			if err == nil || !strings.Contains(err.Error(), bad.PkgPath) {
-				t.Errorf("err = %v, want one naming %s", err, bad.PkgPath)
-			}
-		})
+	var notJSON bytes.Buffer // valid flate, but not a share
+	w, _ := flate.NewWriter(&notJSON, flate.BestSpeed)
+	w.Write([]byte("{not json"))
+	w.Close()
+	for _, bad := range []struct {
+		name  string
+		share []byte
+	}{{"not flate", []byte("{not json")}, {"not JSON", notJSON.Bytes()}} {
+		for _, way := range ways {
+			t.Run(bad.name+", "+way.name, func(t *testing.T) {
+				st := openStore(t)
+				res, _ := loadAndBuild(t, st, way.during)
+				pkg := res.Packages[0]
+				if err := st.SaveShares(t.Context(), map[string][]byte{pkg.Key: bad.share}); err != nil {
+					t.Fatal(err)
+				}
+				_, _, _, err := build(t, "testdata/simple", st, way.during)
+				if err == nil || !strings.Contains(err.Error(), pkg.PkgPath) {
+					t.Errorf("err = %v, want one naming %s", err, pkg.PkgPath)
+				}
+			})
+		}
+	}
+}
+
+// A share round-trips through encode and decodeShare, and is stored
+// compressed: smaller than its JSON.
+func TestShareEncoding(t *testing.T) {
+	res := loadFixture(t)
+	repo := map[string]bool{}
+	for _, pkg := range res.Packages {
+		repo[pkg.PkgPath] = true
+	}
+	for _, pkg := range res.Packages {
+		s := buildPackage(pkg, res.Dir, repoImports(pkg, repo)).share()
+		plain, err := json.Marshal(s)
+		if err != nil {
+			t.Fatal(err)
+		}
+		enc := s.encode()
+		if len(enc) >= len(plain) {
+			t.Errorf("%s: encoded share is %d bytes, its JSON %d: want it compressed", pkg.PkgPath, len(enc), len(plain))
+		}
+		got, err := decodeShare(enc)
+		if err != nil {
+			t.Fatalf("%s: %v", pkg.PkgPath, err)
+		}
+		if again, _ := json.Marshal(got); !bytes.Equal(again, plain) {
+			t.Errorf("%s: share changed in a round trip", pkg.PkgPath)
+		}
 	}
 }
 
