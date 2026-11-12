@@ -2,13 +2,14 @@
 // repository, like grep for what the code does: who calls what, what runs
 // behind an interface, and who changes which state.
 //
-// This file is only the entry point: it hands off to internal/cli and turns an
-// error into a non-zero exit code. All behavior lives under internal/.
+// This file is only the entry point: it hands off to internal/cli and exits
+// with the code cli.ExitCode gives, as grep's: 0, 1 when a query found
+// nothing, 2 on an error. All behavior lives under internal/.
 //
 // Pipeline (packages marked * are planned, see readme.md for milestones):
 //
-//	GitHub link ──► source ──► load ──► graph ──► store ──► query* ──► cli commands*
-//	 or local path                                         └──► grepo mcp* (agents)
+//	GitHub link ──► source ──► load ──► graph ──► store ──► query ──► cli commands
+//	 or local path                                        └──► grepo mcp* (agents)
 package main
 
 import (
@@ -18,7 +19,5 @@ import (
 )
 
 func main() {
-	if err := cli.Execute(); err != nil {
-		os.Exit(1)
-	}
+	os.Exit(cli.ExitCode(cli.Execute()))
 }

@@ -11,7 +11,8 @@
 //
 // Levels:
 //   - Debug: details for diagnosing problems (git commands, directories). Shown with -v.
-//   - Info: what each stage did and how long it took.
+//   - Info: what each stage did and how long it took. Query commands (callers)
+//     leave it out unless -v, like grep, which says nothing but its results.
 //   - Warn: something failed but the run continues (e.g. a package didn't load).
 //   - Error: the run failed.
 //
@@ -25,13 +26,9 @@ import (
 	"time"
 )
 
-// New returns a logger that writes to w. format is "text" (readable, for
-// terminals) or "json" (for the server and log tools). verbose enables Debug.
-func New(w io.Writer, format string, verbose bool) (*slog.Logger, error) {
-	level := slog.LevelInfo
-	if verbose {
-		level = slog.LevelDebug
-	}
+// New returns a logger that writes to w, from level up. format is "text"
+// (readable, for terminals) or "json" (for the server and log tools).
+func New(w io.Writer, format string, level slog.Level) (*slog.Logger, error) {
 	opts := &slog.HandlerOptions{Level: level}
 
 	switch format {

@@ -1,10 +1,10 @@
 // Package cli defines grepo's command-line interface, built on cobra.
 //
-// The CLI is one of two front ends. The other is the web app (M5), where users
-// paste a GitHub link. Both drive the same pipeline, so commands stay thin:
-// they parse arguments, call into the pipeline packages (source, load, graph,
-// and later store/llm), and print results. Analysis logic does not belong here.
-// Each subcommand lives in its own file and is registered in newRootCmd.
+// The CLI is grepo's front end; `grepo mcp` (planned) will serve the same
+// queries to agents. Commands stay thin: they parse arguments, call into the
+// pipeline packages (source, load, graph, query), and print results.
+// Analysis logic does not belong here. Each subcommand lives in its own file
+// and is registered in newRootCmd.
 //
 // root.go also sets up logging from the global flags (-v/--verbose,
 // --log-format) and hands the logger to every command through app.
@@ -12,12 +12,14 @@
 // Commands:
 //   - analyze (analyze.go): analyze a GitHub link or local path and output its
 //     package and call graphs as JSON.
+//   - callers (callers.go): every site that can call a function, grep-style.
+//     Query commands share query.go: loading, positions, exit codes.
 //   - vta-diff (vtadiff.go, hidden): compare the call graph with x/tools' VTA.
-//   - serve (planned, M5): host the web UI for an analyzed repo.
 package cli
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -46,7 +48,13 @@ func newRootCmd(a *app) *cobra.Command {
 		SilenceUsage:  true,
 		SilenceErrors: true, // Execute logs errors itself
 		PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
-			log, err := logging.New(cmd.ErrOrStderr(), logFormat, verbose)
+			level := slog.LevelInfo
+			if verbose {
+				level = slog.LevelDebug
+			} else if cmd.Annotations[quiet] != "" {
+				level = slog.LevelWarn
+			}
+			log, err := logging.New(cmd.ErrOrStderr(), logFormat, level)
 			if err != nil {
 				return err
 			}
@@ -58,19 +66,21 @@ func newRootCmd(a *app) *cobra.Command {
 	root.PersistentFlags().StringVar(&logFormat, "log-format", "text", "log format: text or json")
 
 	root.AddCommand(newAnalyzeCmd(a))
+	root.AddCommand(newCallersCmd(a))
 	root.AddCommand(newVTADiffCmd(a))
 	return root
 }
 
 // Execute runs the root command. Ctrl-C cancels the context, which stops
-// in-progress clones and go toolchain calls.
+// in-progress clones and go toolchain calls. ExitCode turns its error into
+// the process's exit code.
 func Execute() error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
 
 	a := &app{}
 	err := newRootCmd(a).ExecuteContext(ctx)
-	if err != nil {
+	if _, reported := err.(reportedError); err != nil && !reported && !errors.Is(err, errNoResults) {
 		// Errors before the logger exists (bad flags, bad --log-format) can't
 		// be logged, so print them plainly.
 		if a.log != nil {
