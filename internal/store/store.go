@@ -1,7 +1,8 @@
 // Package store is grepo's on-disk cache: one shared SQLite database, one row
 // per package key (see load's packageKey). A row holds what a later run needs
-// so it doesn't type-check the package again: its export data, and for a repo
-// package its graph share, so it isn't walked either.
+// so it doesn't build the package again: for a dependency its export data, so
+// it isn't type-checked, and for a repo package its graph share, so it isn't
+// walked.
 //
 // Keys say everything a row depends on, so the stdlib's and the module
 // cache's rows are shared by every repo using the same module cache, and
@@ -29,7 +30,7 @@ const schema = `CREATE TABLE IF NOT EXISTS packages (
 	key         TEXT PRIMARY KEY,
 	import_path TEXT NOT NULL,
 	last_used   INTEGER NOT NULL, -- unix seconds, for pruning
-	export      BLOB,             -- gcexportdata
+	export      BLOB,             -- dependencies: gcexportdata
 	share       BLOB              -- repo packages: the graph's share, encoded by graph
 )`
 
@@ -43,7 +44,7 @@ type Store struct {
 type Row struct {
 	Key        string
 	ImportPath string // for debugging and pruning; the key already holds it
-	Export     []byte // gcexportdata
+	Export     []byte // dependencies: gcexportdata; nil for repo packages
 	Share      []byte // repo packages, once walked; nil keeps the share already saved
 }
 
@@ -131,8 +132,8 @@ func (s *Store) Share(ctx context.Context, key string) (share []byte, saved bool
 }
 
 // SaveShares saves graph shares by key, in one transaction; a nil share
-// removes the saved one. Only rows already saved get one: a share is no use
-// without the package's export data.
+// removes the saved one. Only rows already saved get one: a package's row is
+// written at the end of its load, when its key is known to be cacheable.
 func (s *Store) SaveShares(ctx context.Context, shares map[string][]byte) error {
 	if len(shares) == 0 {
 		return nil

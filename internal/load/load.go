@@ -56,12 +56,12 @@ type Package struct {
 
 	Fset      *token.FileSet // shared by every package in the Result
 	Syntax    []*ast.File    // nil when it came from the store
-	Types     *types.Package // from the store: its exported API only, what importers need
+	Types     *types.Package // from the store: checked from source without bodies, what importers need
 	TypesInfo *types.Info    // nil when it came from the store
 
-	// With a store: Key is the package's row, "" if it has none (errors, or
-	// types export data can't carry). Share is the graph share saved there;
-	// when set, the package came from the store, not from source.
+	// With a store: Key is the package's row, "" if it has none (errors).
+	// Share is the graph share saved there; when set, the package came from
+	// the store and isn't walked.
 	Key   string
 	Share []byte
 }

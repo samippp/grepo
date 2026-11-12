@@ -119,8 +119,9 @@ var grepoVersion = sync.OnceValues(func() (string, error) {
 	return hex.EncodeToString(h.Sum(nil)), nil
 })
 
-// cache is one load's use of the store: it reads packages' export data and
-// collects what to write back, saved in one transaction at the end.
+// cache is one load's use of the store: it reads dependencies' export data
+// and repo packages' shares, and collects what to write back, saved in one
+// transaction at the end.
 type cache struct {
 	ctx    context.Context
 	st     *store.Store
@@ -223,31 +224,45 @@ func (ca *cache) load(key, path string, fset *token.FileSet, deps map[string]*ty
 }
 
 // share returns the graph share saved under key (nil if none), and whether
-// key has a row.
+// key has a row. A share returned counts as a use of the row.
 func (ca *cache) share(key string) (share []byte, saved bool) {
 	share, saved, err := ca.st.Share(ca.ctx, key)
 	if err != nil {
 		return nil, false
+	}
+	if share != nil {
+		ca.mu.Lock()
+		ca.used = append(ca.used, key)
+		ca.mu.Unlock()
 	}
 	return share, saved
 }
 
 // checked records a package checked from source: a cacheable one is written
 // back unless its row is there already (saved: the key fixes what's in it).
-// It reports whether the package has a row after the load.
-func (ca *cache) checked(key string, tpkg *types.Package, fset *token.FileSet, cacheable, saved bool) bool {
-	var export bytes.Buffer
-	if cacheable && !saved {
-		if err := gcexportdata.Write(&export, fset, tpkg); err != nil {
-			cacheable = false
+// A dependency's row holds its export data. A repo package's holds none: its
+// types are checked from source when it comes from the store, and its share
+// is saved into the row after the graph. It reports whether the package has
+// a row after the load.
+func (ca *cache) checked(key string, tpkg *types.Package, fset *token.FileSet, repo, cacheable, saved bool) bool {
+	if !cacheable || saved {
+		return cacheable
+	}
+	var export []byte
+	if !repo {
+		if borrowsMethods(tpkg) {
+			return false
 		}
+		var buf bytes.Buffer
+		if err := gcexportdata.Write(&buf, fset, tpkg); err != nil {
+			return false
+		}
+		export = buf.Bytes()
 	}
 	ca.mu.Lock()
 	defer ca.mu.Unlock()
-	if cacheable && !saved {
-		ca.rows = append(ca.rows, store.Row{Key: key, ImportPath: tpkg.Path(), Export: export.Bytes()})
-	}
-	return cacheable
+	ca.rows = append(ca.rows, store.Row{Key: key, ImportPath: tpkg.Path(), Export: export})
+	return true
 }
 
 func (ca *cache) save() error {
@@ -258,9 +273,10 @@ func (ca *cache) save() error {
 // from another named interface (type List metav1.ListInterface): checked
 // from source, its methods are the other interface's. Export data copies
 // the interface, so read back they'd be new methods of tpkg's type, and the
-// graph would name interface calls through it differently. Such a package
+// graph would name interface calls through it differently. Such a dependency
 // isn't cached; a package that only mentions its types is, since reading
-// export data keeps the types already in the map.
+// export data keeps the types already in the map. Repo packages' rows hold
+// no export data, so it doesn't apply to them.
 func borrowsMethods(tpkg *types.Package) bool {
 	scope := tpkg.Scope()
 	for _, name := range scope.Names() {
