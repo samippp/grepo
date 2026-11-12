@@ -193,7 +193,7 @@ CallGraphBuilder.Add (a load.Walk: each repo package during the load; BuildCallG
 - `init` functions get file + position (`@file#n`); inserting an `init` above another shifts its number (accepted: nothing can call `init`, so no edges break).
 - Method IDs use the type's ID as the receiver (consistent with `Owner`; normalizes renamed type parameters and constraints).
 - Call positions are `file:line` at the start of the call expression.
-- Local types: `parent.name#n`, always numbered. Chosen over `pkg.name@file:line` because the ID says where the type lives (useful to the MCP) and survives line shifts (wiki URLs). The parent is the innermost enclosing function or closure (`spawn$1.job#1`), or a package-level closure's ID.
+- Local types: `parent.name#n`, always numbered. Chosen over `pkg.name@file:line` because the ID says where the type lives (useful to the MCP) and survives line shifts (IDs that agents and scripts keep between queries). The parent is the innermost enclosing function or closure (`spawn$1.job#1`), or a package-level closure's ID.
 - Local type IDs are assigned during the walk and kept in an `idTable` that `funcID` / `typeID` consult; the graph keeps it, so `CallGraph.FuncID` / `TypeID` work for consumers like vtadiff. A local type missing from the table gets `#?` rather than silently taking a package-level ID.
 
 ### Functions and calls
@@ -261,7 +261,7 @@ CallGraphBuilder.Add (a load.Walk: each repo package during the load; BuildCallG
 - First as a behavior-preserving refactor: existing tests and the `vta-diff` report unchanged, before any reads.
 
 ### Closures (#13)
-- Purpose: calls *to* closures. Inline HTTP handlers, goroutines, `sort.Slice` comparators and cobra `RunE`s are closures; without nodes, entry points (M4) can't find inline handlers and flows (M7) can't enter them. Done before M2 because it changes existing edges and IDs, and the store and query layer should be built on the final shape.
+- Purpose: calls *to* closures. Inline HTTP handlers, goroutines, `sort.Slice` comparators and cobra `RunE`s are closures; without nodes, entry points (M3) can't find inline handlers and flows (M7) can't enter them. Done before M2 because it changes existing edges and IDs, and the store and query layer should be built on the final shape.
 - A closure is a `Function` with `Parent`, not a separate struct, like methods. Everything inside it (calls, accesses, local types, nested closures) belongs to it: "everything `f` does" rolls up through `Parent`. Kept apart rather than merged into the enclosing function, because a goroutine or handler body runs at a different time, often many times, and M4 / M7 need to tell them apart.
 - IDs: parent + `$n` in source order, like SSA (`main$1`, `main$1$2`). Numbered in a pre-pass over each body, not during the walk, so the order is the source order even where the walk visits a statement's parts out of order (writes before right sides). Inserting a closure renumbers later ones in the same parent: accepted, like `init`; local types use `#n` per name, but closures have no name to number by.
 - Package-level closures take the var they initialize as parent (`OnReady$1`), not the package: the ID says what it is, and it doesn't depend on file order. `var a, b = f1, f2` pairs values with names; one value for several names uses the first. Blank vars have no node, so their closures use the package (`pkg._$n`).
@@ -373,4 +373,3 @@ CallGraphBuilder.Add (a load.Walk: each repo package during the load; BuildCallG
 | Pointer contents | `s.db.Close()`, `f(s.db)` may change what `db` points to; no edge by design (only direct writes like `s.db.x = 1` give `content`) |
 | Method summaries | whether a method changes its receiver, transitively; deferred, needs the root of each write on `Access` |
 | Type strings of local types | `types.TypeString` prints a local `result` as `pkg.result`, so a param or field of a local type doesn't show its `#n` ID |
-| M6: explanation cache | key on a hash of the node's source, not its ID: a stable ID doesn't mean unchanged code |
