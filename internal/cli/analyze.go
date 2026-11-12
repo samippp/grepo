@@ -20,6 +20,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"sync"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -106,14 +107,20 @@ func newAnalyzeCmd(a *app) *cobra.Command {
 				"static", kinds[graph.StaticCall], "interface", kinds[graph.InterfaceCall], "dynamic", kinds[graph.DynamicCall],
 				"resolved", resolvedPercent(kinds[graph.StaticCall], len(cg.Calls)),
 				"took", logging.Since(t))
+			// Walked packages' shares, so the next run needn't walk them. They're
+			// saved while the output is written: saving mostly waits on the disk,
+			// and writing the output is one core encoding JSON.
+			var saving sync.WaitGroup
+			defer saving.Wait() // deferred after st.Close, so it runs first
 			if st != nil && len(shares) > 0 {
-				// Walked packages' shares, so the next run needn't walk them.
-				t = time.Now()
-				if err := st.SaveShares(ctx, shares); err != nil {
-					log.Warn("saving graph shares to the store", "err", err)
-				} else {
-					log.Debug("saved graph shares", "packages", len(shares), "took", logging.Since(t))
-				}
+				saving.Go(func() {
+					t := time.Now()
+					if err := st.SaveShares(ctx, shares); err != nil {
+						log.Warn("saving graph shares to the store", "err", err)
+					} else {
+						log.Debug("saved graph shares", "packages", len(shares), "took", logging.Since(t))
+					}
+				})
 			}
 
 			// Local paths have no source info, so leave the field out entirely.
@@ -142,6 +149,7 @@ func newAnalyzeCmd(a *app) *cobra.Command {
 				return err
 			}
 
+			saving.Wait()
 			log.Info("analysis complete", "module", g.Module, "took", logging.Since(start))
 			return nil
 		},
