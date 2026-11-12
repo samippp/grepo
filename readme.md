@@ -85,7 +85,7 @@ Milestone numbers are kept as they were, so references in issues and the docs st
 - **M0:** GitHub link input, package import graph ✅
 - **M1: the graph**
   - **M1a:** symbols, signatures and direct calls (hand-written AST walker) ✅
-  - **M1b:** interface calls resolved to their implementations ✅
+  - **M1b:** interface calls resolved to their implementations ✅, including interfaces from outside the repo that it calls through (`io.Writer`, `error`) ✅; outside interfaces only outside code calls through, the rest of #14
   - **M1c:** check the call graph against x/tools' VTA (`grepo vta-diff`) ✅
   - **M1d:** writes to package vars and struct fields ✅
   - **M1e:** reads and escapes of package vars and struct fields, plus `Through` on calls, for `impact`, dead-field detection and safer mutability claims ✅

@@ -47,7 +47,26 @@ func (b *callGraphBuilder) callee(call *ast.CallExpr) (id string, kind CallKind,
 	if fn == nil {
 		return "", DynamicCall, true
 	}
-	return b.ids.funcID(fn), callKind(fn), true // funcID: List[int].Push → List[T].Push
+	kind = callKind(fn)
+	if kind == InterfaceCall {
+		b.calledThrough(fn)
+	}
+	return b.ids.funcID(fn), kind, true // funcID: List[int].Push → List[T].Push
+}
+
+// calledThrough adds the interface an interface call's method is declared on
+// to the package's summary, so types implementing it are matched even when
+// it's from outside the repo (io.Writer, error): that's the interface the
+// call names, embedded or not. Interfaces without a name (literals) have no
+// ID to match.
+func (b *callGraphBuilder) calledThrough(fn *types.Func) {
+	named, _ := receiver(fn.Origin())
+	if named == nil {
+		return
+	}
+	if iface, ok := named.Underlying().(*types.Interface); ok {
+		b.summarizeInterface(named.Obj(), iface)
+	}
 }
 
 // unindex strips type args or an index: first[int] → first, handlers[0] → handlers.

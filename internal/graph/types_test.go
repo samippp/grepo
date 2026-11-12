@@ -130,6 +130,8 @@ func TestCallGraphTypes(t *testing.T) {
 		{ID: tStringish, Name: "Stringish", Package: modelPkg, Kind: InterfaceType, Exported: true, Pos: "model/impls.go:19", Embeds: []string{"~int"}},
 		{ID: tWriter, Name: "Writer", Package: storePkg, Kind: InterfaceType, Exported: true, Pos: iat("43")},
 		{ID: tRawWriter, Name: "rawWriter", Package: storePkg, Kind: StructType, Pos: iat("45")},
+		{ID: tBufWriter, Name: "bufWriter", Package: storePkg, Kind: StructType, Pos: "store/outside.go:8"},
+		{ID: tFailure, Name: "failure", Package: storePkg, Kind: StructType, Pos: "store/outside.go:15"},
 	}
 
 	checkExact(t, "type", g.Types, want, func(ty Type) string { return fmt.Sprintf("%+v", ty) })
@@ -165,11 +167,17 @@ func TestCallGraphImplementations(t *testing.T) {
 		{Type: tImpl, Interface: tMaker},
 		// byte is uint8.
 		{Type: tRawWriter, Interface: tWriter},
+		// An interface from outside the repo, which flush calls through
+		// (store/outside.go). bufWriter's Write has a pointer receiver.
+		{Type: tBufWriter, Interface: "io.Writer", PointerOnly: true},
+		// Built in, called through by main's describe.
+		{Type: tFailure, Interface: "error"},
 		// Nothing for Stringish: interfaces with type terms only constrain type
 		// params, so they're left out, though UserID is in its type set.
 		// Nothing for Any: empty interfaces are skipped.
 		// Not listed: interfaces themselves, generic List[T] (no type args to check),
-		// and interfaces outside the repo (UserID implements fmt.Stringer).
+		// and interfaces outside the repo that no call goes through (UserID
+		// implements fmt.Stringer, but fmt.Println takes any).
 	}
 
 	checkExact(t, "implementation", g.Implementations, want, func(im Implementation) string { return fmt.Sprintf("%+v", im) })

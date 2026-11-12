@@ -98,7 +98,7 @@ Func      assign / construct: the function the written value is, like Arg.Func
           (cobra.Command{RunE: func…}, s.onErr = h); "" otherwise
 ```
 
-**`Implementation`**: a concrete repo type satisfies a repo interface.
+**`Implementation`**: a concrete repo type satisfies an interface: one declared in the repo, or one from outside it that the repo calls methods through (`io.Writer`, `error`), which has no node, like a callee outside the repo.
 
 ```
 Type, Interface   type IDs
@@ -120,7 +120,7 @@ PointerOnly       only *Type implements it
    (function)   Package  (PackageGraph node)
 ```
 
-Every reference is an ID string, and every ID resolves to a node. Exceptions by design: a dynamic call's empty callee, and callees outside the repo (e.g. `fmt.Println`), which are kept but have no node.
+Every reference is an ID string, and every ID resolves to a node. Exceptions by design: a dynamic call's empty callee, and callees and implemented interfaces outside the repo (e.g. `fmt.Println`, `io.Writer`), which are kept but have no node.
 
 Example: what can `lookup` reach through `g.Get(1)`?
 
@@ -214,7 +214,8 @@ CallGraphBuilder.Add (a load.Walk: each repo package during the load; BuildCallG
 ### Interface resolution (M1b)
 - Record facts (`Implementation`) instead of "might call" edges, which would be noisy (caddy's `Module` has 137 implementations).
 - `PointerOnly` distinguishes `*T` from `T`.
-- Repo interfaces and repo concrete types only (outside interfaces: #14). Generic and empty interfaces are skipped.
+- Repo concrete types. Interfaces declared in the repo, and those from outside it that the repo calls through (`w.Write` on an `io.Writer`, `err.Error()`): the interface the call names, the embedded one when the method comes from an embedded interface. That's the set `callers` needs, since a call through an interface nothing calls through doesn't exist. Not yet (the rest of #14): outside interfaces only outside code calls through (`Handler` implements `http.Handler`, but only `net/http` calls `ServeHTTP` through it). Generic, unnamed and empty interfaces are skipped.
+- Checked with `vta-diff` on caddy, which now takes the interface from the callee's ID when it has no node: interface targets confirmed 4,258 → 5,859, outside the repo 1,812 → 211, of which 203 have a target type outside the repo (`*testing.T` behind `testing.TB`) and 8 go through unnamed interfaces; none missing an implementation.
 - Matched after every package is built, from each package's stored method sets (see Implementations from summaries), so a cached package takes part without type-checking.
 - A first-method-key index picks candidates; the method sets decide.
 
@@ -298,12 +299,12 @@ CallGraphBuilder.Add (a load.Walk: each repo package during the load; BuildCallG
 - Tests: `TestWalk`: each repo package is walked once, with syntax and type information, both nil afterwards with `Types` kept, and `repo` is exactly the repo packages. `TestWalkFromStore`: a package from the store is walked with its share and no syntax, the broken one from source, and no share is kept. `TestCallGraphBuilderMatchesBuildCallGraph`: byte-identical JSON on the fixture. `TestCallGraphBuilderKeepsNoSyntax`: after the graph and a GC, no walked `*ast.File` or `*ast.FuncLit` is reachable (weak pointers); with closure IDs kept, it fails. The store's graph tests run both ways, after the load and during it.
 
 ### Implementations from summaries (M2a)
-- A cached package has no type-checker objects, so `types.Implements` can't run on it. Each package stores a `typeSummary` instead: its concrete types' value and pointer method sets, and its interfaces' method sets (embedded ones included), as method key → signature key. Matching reruns every time over all summaries, so a new interface in one package is matched against unchanged types in others.
+- A cached package has no type-checker objects, so `types.Implements` can't run on it. Each package stores a `typeSummary` instead: its concrete types' value and pointer method sets, and the method sets (embedded ones included) of the interfaces it declares or calls through, as method key → signature key. Several packages can list the same outside interface; it's matched once. Matching reruns every time over all summaries, so a new interface in one package is matched against unchanged types in others.
 - Not `gcexportdata` plus `types.Implements`: export data holds package-level declarations only, and local types (`announce.namer`, `spawn$1.job`) take part in implementations.
 - Signature keys are equal exactly when the type checker's identity holds: param names dropped, aliases resolved, `byte` as `uint8`, `...T` kept apart from `[]T`, local types by their grepo ID (two local `result`s both print as `store.result`), and unexported method names qualified by their package (`model`'s `seal` isn't `store`'s).
 - Interfaces with type terms (`interface{ ~int; String() string }`) are left out, though `types.Implements` matches them: nothing holds a value of one, and caddy, bubbletea and lo have none with methods. Summarizing type sets isn't worth it.
 - Summaries are plain strings and maps: they're stored as they are (JSON, like the rest of a share).
-- Tests: `model/impls.go` and `store/impls.go` hold one case per rule above; matching from summaries, after a JSON round trip, must give exactly what `types.Implements` gives on the fixture (the old matcher, kept in the test as the oracle).
+- Tests: `model/impls.go` and `store/impls.go` hold one case per rule above, `store/outside.go` an `io.Writer` and an `error`; matching from summaries, after a JSON round trip, must give exactly what `types.Implements` gives on the fixture, over the repo's interfaces and the outside ones a call goes through (the old matcher, kept in the test as the oracle).
 
 ### Loading (M2a)
 - Our own loader: `go list` metadata plus `go/types` directly, replacing `go/packages`. Dependencies are type-checked from source, not compiled.
@@ -373,7 +374,7 @@ CallGraphBuilder.Add (a load.Walk: each repo package during the load; BuildCallG
 |---|---|
 | #8: type arguments on generic calls | deferred to M7 |
 | Closures through locals | `inc := func(){…}; inc()` stays dynamic; the closure node exists, but nothing links the call to it |
-| #14: implementations of outside interfaces | open |
+| #14: implementations of outside interfaces | partly: those the repo calls through are matched; those only outside code calls through aren't (Interface resolution) |
 | Constraint interfaces | interfaces with type terms get no implementations (Implementations from summaries) |
 | Aliasing through locals | `m := s.users; m[k] = v` writes into `Store.users` but gets no `content` edge; the `escape` at `m := s.users` makes the gap visible |
 | Pointer contents | `s.db.Close()`, `f(s.db)` may change what `db` points to; no edge by design (only direct writes like `s.db.x = 1` give `content`) |

@@ -67,7 +67,7 @@ func Compare(res *load.Result, pkgs []*packages.Package, cg *graph.CallGraph) *R
 	dynNone := r.cat("Dynamic calls neither resolves", "a call through a function value that VTA can't resolve either (e.g. a callback parameter)")
 	ifaceOK := r.cat("Interface targets confirmed", "VTA target's type implements the interface, per grepo's Implementations")
 	ifaceNotImpl := r.cat("Interface targets not in Implementations", "repo interface, repo target type, but grepo records no implementation: likely a grepo bug")
-	ifaceOutside := r.cat("Interface targets outside the repo", "the interface or the target type has no grepo node, so Implementations can't confirm it (by design)")
+	ifaceOutside := r.cat("Interface targets outside the repo", "the target type has no grepo node, or the interface is from outside the repo and Implementations has nothing for it (generic or unnamed interfaces), so they can't confirm it (by design)")
 	ifaceNone := r.cat("Interface calls with no VTA target", "VTA found no concrete type reaching the call")
 
 	// Positions are file:line, so a site can hold several calls. Match within
@@ -117,14 +117,19 @@ func Compare(res *load.Result, pkgs []*packages.Package, cg *graph.CallGraph) *R
 			if len(es) == 0 {
 				ifaceNone.add("%s → %s @ %s", c.Caller, c.Callee, c.Pos)
 			}
-			iface := tr.owner[c.Callee] // "" if the interface isn't a repo type
+			iface := tr.owner[c.Callee] // the interface's ID, from its node
+			if iface == "" {
+				iface = interfaceID(c.Callee) // from outside the repo: no node, but Implementations can hold it
+			}
 			for _, e := range es {
 				line := fmt.Sprintf("%s → %s @ %s: target %s (%s)", c.Caller, c.Callee, c.Pos, e.callee, e.targetType)
 				switch {
-				case iface == "" || !tr.repoTypes[e.targetType]:
+				case !tr.repoTypes[e.targetType]:
 					ifaceOutside.add("%s", line)
 				case tr.implements[e.targetType+"|"+iface]:
 					ifaceOK.add("%s", line)
+				case !tr.repoTypes[iface]:
+					ifaceOutside.add("%s", line)
 				default:
 					ifaceNotImpl.add("%s", line)
 				}
@@ -450,6 +455,16 @@ func calleeList(edges []edge) string {
 // methodName is the part after the last dot: "(pkg.Getter).Get" → "Get".
 func methodName(id string) string {
 	return id[strings.LastIndex(id, ".")+1:]
+}
+
+// interfaceID is the interface an interface method's ID names:
+// "(io.Writer).Write" → "io.Writer". "" if id isn't a method's.
+func interfaceID(id string) string {
+	i := strings.LastIndex(id, ").")
+	if !strings.HasPrefix(id, "(") || i < 0 {
+		return ""
+	}
+	return id[1:i]
 }
 
 // nearby finds an unmatched VTA edge with c's caller and callee within 3 lines.

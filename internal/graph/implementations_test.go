@@ -8,7 +8,8 @@ import (
 	"testing"
 )
 
-// Matching from summaries agrees with types.Implements. Summaries go
+// Matching from summaries agrees with types.Implements, over the repo's
+// interfaces and those from outside it that a call goes through. Summaries go
 // through JSON first, as they will through the store.
 func TestImplementationsFromSummaries(t *testing.T) {
 	res := loadFixture(t)
@@ -19,11 +20,27 @@ func TestImplementationsFromSummaries(t *testing.T) {
 
 	var summaries []typeSummary
 	var concrete, interfaces []*types.TypeName
+	outside := map[*types.TypeName]bool{}
 	ids := idTable{}
 	for _, pkg := range res.Packages {
 		b := buildPackage(pkg, res.Dir, repoImports(pkg, repo))
 		summaries = append(summaries, b.summary)
 		maps.Copy(ids, b.ids)
+
+		// Interfaces calls go through, from outside the repo too (io.Writer).
+		for _, obj := range pkg.TypesInfo.Uses {
+			fn, ok := obj.(*types.Func)
+			if !ok || callKind(fn) != InterfaceCall {
+				continue
+			}
+			named, _ := receiver(fn.Origin())
+			if named == nil || isGeneric(named.Obj()) {
+				continue
+			}
+			if p := named.Obj().Pkg(); p == nil || !repo[p.Path()] { // nil: built in (error)
+				outside[named.Obj()] = true
+			}
+		}
 
 		// Every named type the walk visits, package-level and local.
 		for _, obj := range pkg.TypesInfo.Defs {
@@ -42,6 +59,9 @@ func TestImplementationsFromSummaries(t *testing.T) {
 				concrete = append(concrete, tn)
 			}
 		}
+	}
+	for tn := range outside {
+		interfaces = append(interfaces, tn)
 	}
 	data, err := json.Marshal(summaries)
 	if err != nil {
