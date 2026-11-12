@@ -97,7 +97,7 @@ Milestone numbers are kept as they were, so references in issues and the docs st
     - edits rebuild the changed package and its reverse imports; everything else is reused ✅
     - repo packages walked as soon as they're checked, their syntax dropped after (#35) ✅
     - rescoped (#44): the store keeps each package's graph share, the part that costs, and types come from source. Caching deep export data cost more than it saved: on Kubernetes, filling the store took 21.1s against 8.6s without it, and a warm run saved ~1.3s
-      - a repo package from the store is type-checked without bodies and its share decoded; no export data
+      - a repo package from the store is type-checked without bodies and its share decoded; no export data ✅
       - dependencies' export data only where it measurably beats checking them without bodies
       - warm runs: rows marked used only when stale, shares decoded in parallel; pruning by last use
       - targets: a warm run clearly faster than `--no-cache`, filling the store within ~20% of it, a run after an edit never slower

@@ -254,8 +254,8 @@ func (c *check) run(ld *loader) {
 	ld.cpu <- struct{}{}
 	defer func() { <-ld.cpu }()
 
-	// With a store, a package's types can come from its export data, and a
-	// repo package's graph share with them, so it isn't parsed or walked.
+	// With a store, a dependency's types can come from its export data, and
+	// a repo package's graph share from its row, so it isn't walked.
 	var srcs []source
 	cacheable := false
 	if ld.cache != nil {
@@ -266,7 +266,7 @@ func (c *check) run(ld *loader) {
 		var readable bool
 		c.key, readable = ld.cache.key(c.lp, identity, srcs, ld.checks)
 		cacheable = readable && c.lp.Error == nil
-		if cacheable && c.fromStore(ld) {
+		if cacheable && c.fromStore(ld, srcs) {
 			close(c.done)
 			c.walk(ld) // a repo package from the store: the walk takes its share
 			return
@@ -276,39 +276,7 @@ func (c *check) run(ld *loader) {
 		srcs = readSources(c.lp)
 	}
 	files := ld.parseFiles(c.lp, srcs, repo, report)
-
-	var info *types.Info
-	if repo {
-		info = &types.Info{
-			Types:        map[ast.Expr]types.TypeAndValue{},
-			Defs:         map[*ast.Ident]types.Object{},
-			Uses:         map[*ast.Ident]types.Object{},
-			Implicits:    map[ast.Node]types.Object{},
-			Instances:    map[*ast.Ident]types.Instance{},
-			Scopes:       map[ast.Node]*types.Scope{},
-			Selections:   map[*ast.SelectorExpr]*types.Selection{},
-			FileVersions: map[*ast.File]string{},
-		}
-	}
-	conf := types.Config{
-		Importer:         importer{c.lp, ld.checks},
-		Sizes:            ld.sizes,
-		IgnoreFuncBodies: !repo,
-		FakeImportC:      true, // cgo files as written: no C.x errors, no importer call for "C"
-		Error: func(err error) {
-			if terr, ok := errors.AsType[types.Error](err); ok {
-				report(posError{ld.fset.Position(terr.Pos).String(), terr.Msg})
-			} else {
-				report(err)
-			}
-		},
-	}
-	if m := c.lp.Module; m != nil && m.GoVersion != "" {
-		conf.GoVersion = "go" + m.GoVersion
-	}
-
-	tpkg := types.NewPackage(c.lp.ImportPath, c.lp.Name)
-	_ = types.NewChecker(&conf, ld.fset, tpkg, info).Files(files) // errors went to conf.Error
+	tpkg, info := ld.typeCheck(c.lp, files, repo, report)
 	c.types = tpkg
 	ld.mu.Lock()
 	ld.checked = append(ld.checked, c.lp.ImportPath)
@@ -317,7 +285,7 @@ func (c *check) run(ld *loader) {
 	if ld.cache != nil {
 		// A repo package with errors is being worked on, and its messages
 		// hold absolute paths; dependencies' errors were dropped.
-		saved = ld.cache.checked(c.key, tpkg, ld.fset, cacheable && len(errs) == 0 && !borrowsMethods(tpkg), c.saved)
+		saved = ld.cache.checked(c.key, tpkg, ld.fset, repo, cacheable && len(errs) == 0, c.saved)
 	}
 	close(c.done) // dependents only need the types, not this package's walk
 
@@ -333,26 +301,36 @@ func (c *check) run(ld *loader) {
 	}
 }
 
-// fromStore takes c's types from the store, and a repo package's share: it
-// needs both, or it's checked from source, since its walk needs the syntax.
-func (c *check) fromStore(ld *loader) bool {
-	var share []byte
-	if !c.lp.DepOnly {
-		share, c.saved = ld.cache.share(c.key)
-		if share == nil {
+// fromStore takes what it can of c from the store. A dependency's types are
+// its export data. A repo package needs its share, or it's checked in full,
+// since its walk needs the syntax; with one, it isn't walked, and its types
+// are checked from source without bodies, like a dependency's. Its export
+// data would hold only its exported API, and read back can differ from
+// source (borrowsMethods).
+func (c *check) fromStore(ld *loader, srcs []source) bool {
+	if c.lp.DepOnly {
+		tpkg := ld.cache.load(c.key, c.lp.ImportPath, ld.fset, c.deps(ld))
+		if tpkg == nil {
 			return false
 		}
+		c.types = tpkg
+		return true
 	}
-	tpkg := ld.cache.load(c.key, c.lp.ImportPath, ld.fset, c.deps(ld))
-	if tpkg == nil {
+	var share []byte
+	share, c.saved = ld.cache.share(c.key)
+	if share == nil {
 		return false
 	}
-	c.types = tpkg
-	if share != nil {
-		c.pkg = c.newPackage(ld, tpkg)
-		c.pkg.Key = c.key
-		c.pkg.Share = share
+	if srcs == nil { // a repo inside the module cache: its files have an identity, so weren't read for the key
+		srcs = readSources(c.lp)
 	}
+	// It had no errors when its row was saved, under this key; checked
+	// without bodies, it can report unused imports.
+	ignore := func(error) {}
+	c.types, _ = ld.typeCheck(c.lp, ld.parseFiles(c.lp, srcs, false, ignore), false, ignore)
+	c.pkg = c.newPackage(ld, c.types)
+	c.pkg.Key = c.key
+	c.pkg.Share = share
 	return true
 }
 
@@ -405,13 +383,14 @@ func (c *check) newPackage(ld *loader, tpkg *types.Package) *Package {
 	}
 }
 
-// parseFiles parses a package's files: repo packages whole, with comments,
-// as the walk reads them; dependencies without comments or object resolution.
-// Stdlib files are named $GOROOT/src/..., as compiler export data names them,
-// so positions in the Go distribution don't depend on where it's installed.
-func (ld *loader) parseFiles(lp *listed, srcs []source, repo bool, report func(error)) []*ast.File {
+// parseFiles parses a package's files. full: a repo package to walk, whole,
+// with comments, as the walk reads them; otherwise without comments or object
+// resolution, for its declarations. Stdlib files are named $GOROOT/src/..., as
+// compiler export data names them, so positions in the Go distribution don't
+// depend on where it's installed.
+func (ld *loader) parseFiles(lp *listed, srcs []source, full bool, report func(error)) []*ast.File {
 	mode := parser.SkipObjectResolution
-	if repo {
+	if full {
 		mode = parser.AllErrors | parser.ParseComments
 	}
 	var files []*ast.File
@@ -440,6 +419,44 @@ func (ld *loader) parseFiles(lp *listed, srcs []source, repo bool, report func(e
 		}
 	}
 	return files
+}
+
+// typeCheck checks a package's parsed files. full: a repo package to walk,
+// with function bodies and type information; otherwise its declarations
+// only, all its dependents need, and info is nil.
+func (ld *loader) typeCheck(lp *listed, files []*ast.File, full bool, report func(error)) (*types.Package, *types.Info) {
+	var info *types.Info
+	if full {
+		info = &types.Info{
+			Types:        map[ast.Expr]types.TypeAndValue{},
+			Defs:         map[*ast.Ident]types.Object{},
+			Uses:         map[*ast.Ident]types.Object{},
+			Implicits:    map[ast.Node]types.Object{},
+			Instances:    map[*ast.Ident]types.Instance{},
+			Scopes:       map[ast.Node]*types.Scope{},
+			Selections:   map[*ast.SelectorExpr]*types.Selection{},
+			FileVersions: map[*ast.File]string{},
+		}
+	}
+	conf := types.Config{
+		Importer:         importer{lp, ld.checks},
+		Sizes:            ld.sizes,
+		IgnoreFuncBodies: !full,
+		FakeImportC:      true, // cgo files as written: no C.x errors, no importer call for "C"
+		Error: func(err error) {
+			if terr, ok := errors.AsType[types.Error](err); ok {
+				report(posError{ld.fset.Position(terr.Pos).String(), terr.Msg})
+			} else {
+				report(err)
+			}
+		},
+	}
+	if m := lp.Module; m != nil && m.GoVersion != "" {
+		conf.GoVersion = "go" + m.GoVersion
+	}
+	tpkg := types.NewPackage(lp.ImportPath, lp.Name)
+	_ = types.NewChecker(&conf, ld.fset, tpkg, info).Files(files) // errors went to conf.Error
+	return tpkg, info
 }
 
 // source is one of a package's files, read.

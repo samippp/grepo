@@ -321,8 +321,11 @@ func pkg(res *Result, path string) *Package {
 	return res.Packages[slices.IndexFunc(res.Packages, func(p *Package) bool { return p.PkgPath == path })]
 }
 
-// A repo package with its row and a share comes from the store: types from
-// export data, the share, no syntax. One with errors gets no row.
+// A repo package with its row and a share comes from the store: the share,
+// no syntax, and types checked from source without bodies; its row holds no
+// export data. One with errors gets no row. Declaring an interface defined
+// from another named one (borrow.go) doesn't keep it out, as it does a
+// dependency (uncached).
 func TestRepoPackageFromStore(t *testing.T) {
 	dir := copyFixture(t)
 	st := openStore(t)
@@ -343,8 +346,14 @@ func TestRepoPackageFromStore(t *testing.T) {
 	if p.Syntax != nil || p.TypesInfo != nil {
 		t.Error("a package from the store has syntax or type information")
 	}
-	if p.Types == nil || p.Types.Path() != repoMain { // export data: main exports nothing, so its scope is empty
+	if p.Types == nil || p.Types.Path() != repoMain {
 		t.Errorf("types %v, want %s's", p.Types, repoMain)
+	} else if p.Types.Scope().Lookup("shout") == nil || p.Types.Scope().Lookup("loud") == nil {
+		// Export data holds only the exported API, and main exports nothing.
+		t.Errorf("%s's scope has %v, want its unexported declarations: checked from source", repoMain, p.Types.Scope().Names())
+	}
+	if export, ok, err := st.Export(t.Context(), p.Key); err != nil || !ok || export != nil {
+		t.Errorf("%s's row: export data %d bytes, row %v, err %v; want a row without export data", repoMain, len(export), ok, err)
 	}
 	if p.Name != "main" || len(p.GoFiles) == 0 || len(p.Imports) == 0 || p.Errors != nil {
 		t.Errorf("name %q, %d files, %d imports, errors %v: want what go list gives", p.Name, len(p.GoFiles), len(p.Imports), p.Errors)
