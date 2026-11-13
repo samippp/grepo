@@ -247,16 +247,9 @@ func TestBuildPackageSeesOnlyItsImports(t *testing.T) {
 	for _, pkg := range res.Packages {
 		repo[pkg.PkgPath] = true
 	}
-	share := func(b *callGraphBuilder) []byte {
-		out, err := json.Marshal([]any{b.types, b.variables, b.functions, b.calls, b.accesses, b.summary})
-		if err != nil {
-			t.Fatal(err)
-		}
-		return out
-	}
 	for _, pkg := range res.Packages {
-		full := share(buildPackage(pkg, res.Dir, repo))
-		narrow := share(buildPackage(pkg, res.Dir, repoImports(pkg, repo)))
+		full := buildPackage(pkg, res.Dir, repo).share().encode()
+		narrow := buildPackage(pkg, res.Dir, repoImports(pkg, repo)).share().encode()
 		if !bytes.Equal(full, narrow) {
 			t.Errorf("%s: its share changes when its walk sees only its own repo imports", pkg.PkgPath)
 		}

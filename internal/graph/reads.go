@@ -15,7 +15,7 @@ func (b *callGraphBuilder) addValueRead(accessor string, obj types.Object, pos t
 	switch obj := obj.(type) {
 	case *types.Var:
 		if packageVar(obj) != nil {
-			target = VarID(obj)
+			target = b.varID(obj)
 		}
 	case *types.Const:
 		// Outside consts can't change and no consumer needs them; local consts have no node.

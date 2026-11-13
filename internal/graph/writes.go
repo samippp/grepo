@@ -225,13 +225,13 @@ func (b *callGraphBuilder) targetID(e ast.Expr) string {
 	switch x := ast.Unparen(e).(type) {
 	case *ast.Ident:
 		if v := packageVar(b.pkg.TypesInfo.Uses[x]); v != nil {
-			return VarID(v)
+			return b.varID(v)
 		}
 	case *ast.SelectorExpr:
 		sel := b.pkg.TypesInfo.Selections[x]
 		if sel == nil {
 			if v := packageVar(b.pkg.TypesInfo.Uses[x.Sel]); v != nil {
-				return VarID(v)
+				return b.varID(v)
 			}
 			return ""
 		}
@@ -288,6 +288,7 @@ func (b *callGraphBuilder) fieldPath(recv types.Type, index []int) ([]fieldStep,
 		}
 		field := typ.Underlying().(*types.Struct).Field(i)
 		if named, ok := types.Unalias(typ).(*types.Named); ok {
+			b.uses(named.Obj().Pkg())
 			step.id = FieldID(b.ids.typeID(named.Origin().Obj()), field.Name()) // List[int].items → List[T].items
 		}
 		steps = append(steps, step)

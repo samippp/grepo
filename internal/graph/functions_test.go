@@ -2,8 +2,12 @@ package graph
 
 import (
 	"fmt"
+	"log/slog"
+	"slices"
 	"strings"
 	"testing"
+
+	"github.com/samippp/grepo/internal/load"
 )
 
 func TestCallGraphFunctions(t *testing.T) {
@@ -163,6 +167,85 @@ func TestCallGraphFunctions(t *testing.T) {
 		}
 	}
 	checkExact(t, "function", got, want, formatFunction)
+}
+
+// Functions outside the repo that calls and func values name get a node
+// without a position: interface methods owned by their interface, error's
+// Error by no package. Only types are compared: the stdlib's param names
+// aren't ours to pin.
+func TestCallGraphExternal(t *testing.T) {
+	g := buildFixtureCallGraph(t)
+	method := func(owner, name string, recv *Param, params, results []Param) Function {
+		ptr := ""
+		if recv != nil && strings.HasPrefix(recv.Type, "*") {
+			ptr = "*"
+		}
+		pkg := ""
+		if i := strings.LastIndex(owner, "."); i >= 0 {
+			pkg = owner[:i]
+		}
+		return Function{ID: "(" + ptr + owner + ")." + name, Name: name, Package: pkg, Receiver: recv,
+			Params: params, Results: results, Exported: true, Owner: owner}
+	}
+	fn := func(pkg, name string, params, results []Param) Function {
+		return Function{ID: pkg + "." + name, Name: name, Package: pkg, Params: params, Results: results, Exported: true}
+	}
+	handler := ps("", "net/http.ResponseWriter", "", "*net/http.Request")
+	want := []Function{
+		method("sync.Mutex", "Lock", recv("", "*sync.Mutex"), nil, nil),
+		method("sync.Mutex", "Unlock", recv("", "*sync.Mutex"), nil, nil),
+		method("error", "Error", nil, nil, ps("", "string")),
+		method("io.Writer", "Write", nil, ps("", "[]byte"), ps("", "int", "", "error")),
+		method("net/http.Handler", "ServeHTTP", nil, handler, nil),
+		fn("fmt", "Println", ps("", "[]any"), ps("", "int", "", "error")),
+		fn("net/http", "HandleFunc", ps("", "string", "", "func(net/http.ResponseWriter, *net/http.Request)"), nil),
+		fn("sort", "Slice", ps("", "any", "", "func(i int, j int) bool"), nil),
+	}
+
+	typesOnly := func(f Function) string {
+		var types []string
+		for _, ps := range [][]Param{f.Params, f.Results} {
+			var ts []string
+			for _, p := range ps {
+				ts = append(ts, p.Type)
+			}
+			types = append(types, strings.Join(ts, ", "))
+		}
+		recv := ""
+		if f.Receiver != nil {
+			recv = f.Receiver.Type
+		}
+		return fmt.Sprintf("%s {name=%s pkg=%s recv=%s params=(%s) results=(%s) exported=%v pos=%s owner=%s parent=%s}",
+			f.ID, f.Name, f.Package, recv, types[0], types[1], f.Exported, f.Pos, f.Owner, f.Parent)
+	}
+	checkExact(t, "external function", g.External, want, typesOnly)
+}
+
+// Dependencies are the packages outside the repo that IDs name, wherever
+// they come from: functions, fields (req.URL.Path's net/url) and vars
+// (os.Args). The walk sees the same objects through go/packages, whose
+// dependencies come from export data and import less, so it finds the same.
+func TestCallGraphDependencies(t *testing.T) {
+	g := buildFixtureCallGraph(t)
+	want := []Dependency{
+		{"fmt", "fmt"}, {"io", "io"}, {"net/http", "http"}, {"net/url", "url"},
+		{"os", "os"}, {"sort", "sort"}, {"sync", "sync"},
+	}
+	if !slices.Equal(g.Dependencies, want) {
+		t.Errorf("dependencies = %v, want %v", g.Dependencies, want)
+	}
+
+	res, _, err := load.GoPackages(t.Context(), "testdata/simple", slog.New(slog.DiscardHandler))
+	if err != nil {
+		t.Fatal(err)
+	}
+	viaPackages, _, err := BuildCallGraph(res)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(viaPackages.Dependencies, want) {
+		t.Errorf("through go/packages, dependencies = %v, want %v", viaPackages.Dependencies, want)
+	}
 }
 
 func TestCallGraphClosures(t *testing.T) {

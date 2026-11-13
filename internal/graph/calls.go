@@ -51,7 +51,7 @@ func (b *callGraphBuilder) callee(call *ast.CallExpr) (id string, kind CallKind,
 	if kind == InterfaceCall {
 		b.calledThrough(fn)
 	}
-	return b.ids.funcID(fn), kind, true // funcID: List[int].Push → List[T].Push
+	return b.funcRef(fn), kind, true
 }
 
 // calledThrough adds the interface fn is declared on to the package's

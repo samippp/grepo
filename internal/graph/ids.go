@@ -75,6 +75,19 @@ func (ids idTable) typeID(tn *types.TypeName) string {
 	return id + "[" + strings.Join(params, ", ") + "]"
 }
 
+// uses notes the name of pkg, if another package an ID names, for Dependencies.
+func (b *callGraphBuilder) uses(pkg *types.Package) {
+	if pkg != nil && pkg.Path() != b.pkg.PkgPath {
+		b.deps[pkg.Path()] = pkg.Name()
+	}
+}
+
+// varID is VarID(v), with its package noted (uses).
+func (b *callGraphBuilder) varID(v *types.Var) string {
+	b.uses(v.Pkg())
+	return VarID(v)
+}
+
 // VarID is "pkg.name" for a package-level var or const.
 func VarID(obj types.Object) string {
 	return obj.Pkg().Path() + "." + obj.Name()

@@ -28,10 +28,21 @@ const (
 // and through Getter, Store.Write through io.Writer (from outside the repo),
 // passes handle to http.HandleFunc and stores Store.Get in a field.
 func testIndex() *Index {
-	pg := &graph.PackageGraph{Packages: []graph.Package{
-		{Path: app, Name: "main"}, {Path: store, Name: "store"}, {Path: cache, Name: "cache"},
-	}}
+	pg := &graph.PackageGraph{
+		Packages: []graph.Package{
+			{Path: app, Name: "main"}, {Path: store, Name: "store"}, {Path: cache, Name: "cache"},
+		},
+	}
 	cg := &graph.CallGraph{
+		Dependencies: []graph.Dependency{
+			{Path: "github.com/dustin/go-humanize", Name: "humanize"}, // not the path's last element
+			{Path: "github.com/x/y/v2", Name: "y"},
+			{Path: "github.com/x/y/v2/z", Name: "z"},
+			{Path: "gopkg.in/yaml.v3", Name: "yaml"},
+			{Path: "io", Name: "io"},
+			{Path: "net/http", Name: "http"},
+			{Path: "os", Name: "os"},
+		},
 		Functions: []graph.Function{
 			{ID: idGet, Name: "Get", Package: store, Owner: tStore},
 			{ID: "(" + tCache + ").Get", Name: "Get", Package: store, Owner: tCache},
@@ -47,6 +58,14 @@ func testIndex() *Index {
 			// A method of a local type: by ID only.
 			{ID: "(" + app + ".run.local#1).Get", Name: "Get", Package: app, Owner: app + ".run.local#1"},
 		},
+		External: []graph.Function{
+			{ID: "os.Exit", Name: "Exit", Package: "os"},
+			{ID: "(net/http.Header).Get", Name: "Get", Package: "net/http", Owner: "net/http.Header"},
+			{ID: "(*gopkg.in/yaml.v3.Node).Decode", Name: "Decode", Package: "gopkg.in/yaml.v3", Owner: "gopkg.in/yaml.v3.Node"},
+			{ID: "(io.Writer).Write", Name: "Write", Package: "io", Owner: "io.Writer"},
+			{ID: "net/http.HandleFunc", Name: "HandleFunc", Package: "net/http"},
+			{ID: "github.com/dustin/go-humanize.Bytes", Name: "Bytes", Package: "github.com/dustin/go-humanize"},
+		},
 		Calls: []graph.FunctionCall{
 			{Caller: idMain, Callee: idGet, Pos: "main.go:17", CallKind: graph.StaticCall},
 			{Caller: idMain + "$1", Callee: idGet, Pos: "main.go:9", CallKind: graph.StaticCall},
@@ -54,10 +73,11 @@ func testIndex() *Index {
 			{Caller: idMain, Callee: "(io.Writer).Write", Pos: "main.go:30", CallKind: graph.InterfaceCall},
 			{Caller: idMain, Callee: "net/http.HandleFunc", Pos: "main.go:40", CallKind: graph.StaticCall,
 				Args: []graph.Arg{{Expr: `"/"`, Type: "string"}, {Expr: "handle", Func: idHandle}}},
-			// Outside the repo: no nodes.
+			// Outside the repo: External nodes.
 			{Caller: idMain, Callee: "os.Exit", Pos: "main.go:60", CallKind: graph.StaticCall},
 			{Caller: idHandle, Callee: "(net/http.Header).Get", Pos: "main.go:70", CallKind: graph.StaticCall},
 			{Caller: idHandle, Callee: "(*gopkg.in/yaml.v3.Node).Decode", Pos: "main.go:71", CallKind: graph.StaticCall},
+			{Caller: idHandle, Callee: "github.com/dustin/go-humanize.Bytes", Pos: "main.go:72", CallKind: graph.StaticCall},
 		},
 		Accesses: []graph.Access{
 			{Accessor: idMain, Target: tStore + ".onGet", Pos: "main.go:50", Kind: graph.AssignAccess, Func: idGet},
@@ -96,6 +116,8 @@ func TestFunc(t *testing.T) {
 		{name: "Writer.Write", want: "(io.Writer).Write"},
 		{name: "yaml.Node.Decode", want: "(*gopkg.in/yaml.v3.Node).Decode"},
 		{name: "Decode", want: "(*gopkg.in/yaml.v3.Node).Decode"},
+		{name: "humanize.Bytes", want: "github.com/dustin/go-humanize.Bytes"}, // its declared name
+		{name: "dustin/go-humanize.Bytes", want: "github.com/dustin/go-humanize.Bytes"},
 		{name: "Write", want: idWrite}, // the repo's wins over io.Writer's
 	} {
 		f, err := ix.Func(tc.name, tc.prefer)
@@ -175,17 +197,19 @@ func TestCallers(t *testing.T) {
 func TestShort(t *testing.T) {
 	ix := testIndex()
 	for id, want := range map[string]string{
-		idGet:                        "(*store.Store).Get",
-		idMain + "$1":                "main.main$1",
-		tStore + ".onGet":            "store.Store.onGet",
-		store:                        "store",
-		"(*" + tList + ").Push":      "(*store.List[T]).Push",
-		"net/http.HandleFunc":        "http.HandleFunc",
-		"(io.Writer).Write":          "(io.Writer).Write",
-		"(error).Error":              "(error).Error",
-		"gopkg.in/yaml.v3.Node":      "yaml.Node",
-		"(*github.com/x/y/v2.T).M":   "(*y.T).M",
-		"github.com/x/y/v2/z.Config": "z.Config",
+		idGet:                                 "(*store.Store).Get",
+		idMain + "$1":                         "main.main$1",
+		tStore + ".onGet":                     "store.Store.onGet",
+		store:                                 "store",
+		"(*" + tList + ").Push":               "(*store.List[T]).Push",
+		"net/http.HandleFunc":                 "http.HandleFunc",
+		"(io.Writer).Write":                   "(io.Writer).Write",
+		"(error).Error":                       "(error).Error",
+		"gopkg.in/yaml.v3.Node":               "yaml.Node",
+		"(*github.com/x/y/v2.T).M":            "(*y.T).M",
+		"github.com/x/y/v2/z.Config":          "z.Config",
+		"github.com/dustin/go-humanize.Bytes": "humanize.Bytes",
+		"github.com/unknown/pkg.F":            "github.com/unknown/pkg.F", // not in the graph: left whole
 	} {
 		if got := ix.Short(id); got != want {
 			t.Errorf("Short(%q) = %q, want %q", id, got, want)

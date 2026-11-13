@@ -40,20 +40,29 @@ func (b *callGraphBuilder) assignFuncDeclID(funcDecl *ast.FuncDecl, fn *types.Fu
 	return fmt.Sprintf("%s@%s#%d", fn.FullName(), file, b.inits[file])
 }
 
-// newFunction builds the Function node for fn, with the given ID.
+// newFunction builds the Function node for fn, a repo function, with the given ID.
 func (b *callGraphBuilder) newFunction(fn *types.Func, id string) Function {
+	node := b.funcNode(fn, id)
+	node.Pos = b.pos(fn.Pos())
+	return node
+}
+
+// funcNode is fn's Function node without a position, all a function outside
+// the repo gets. Interface methods have no written receiver.
+func (b *callGraphBuilder) funcNode(fn *types.Func, id string) Function {
 	sig := fn.Signature()
 	node := Function{
 		ID:       id,
 		Name:     fn.Name(),
-		Package:  b.pkg.PkgPath,
 		Params:   tupleParams(sig.Params()),
 		Results:  tupleParams(sig.Results()),
 		Exported: fn.Exported(),
-		Pos:      b.pos(fn.Pos()),
 		Owner:    b.ids.receiverOwner(fn),
 	}
-	if recv := sig.Recv(); recv != nil {
+	if fn.Pkg() != nil { // nil for error's Error
+		node.Package = fn.Pkg().Path()
+	}
+	if recv := sig.Recv(); recv != nil && !types.IsInterface(recv.Type()) {
 		node.Receiver = &Param{Name: recv.Name(), Type: types.TypeString(recv.Type(), nil)}
 	}
 	return node
@@ -62,9 +71,21 @@ func (b *callGraphBuilder) newFunction(fn *types.Func, id string) Function {
 // addInterfaceMethod records a method declared in an interface as a
 // Function owned by that interface. It has no body, so no calls.
 func (b *callGraphBuilder) addInterfaceMethod(fn *types.Func) {
-	node := b.newFunction(fn, b.ids.funcID(fn))
-	node.Receiver = nil // interface methods have no written receiver
-	b.functions = append(b.functions, node)
+	b.functions = append(b.functions, b.newFunction(fn, b.ids.funcID(fn)))
+}
+
+// funcRef is the ID of fn, a function a call or a func value names. One
+// outside pkg gets an External node, which the merge drops if it's in the
+// repo: pkg can't tell, since it can call methods of packages it doesn't import.
+func (b *callGraphBuilder) funcRef(fn *types.Func) string {
+	id := b.ids.funcID(fn) // List[int].Push → List[T].Push
+	if fn.Pkg() == nil || fn.Pkg().Path() != b.pkg.PkgPath {
+		b.uses(fn.Pkg())
+		if _, ok := b.external[id]; !ok {
+			b.external[id] = b.funcNode(fn.Origin(), id)
+		}
+	}
+	return id
 }
 
 // Closures. See docs/architecture.md for the rules.
@@ -117,15 +138,15 @@ func (b *callGraphBuilder) funcValue(e ast.Expr) string {
 		return b.closures[x]
 	case *ast.Ident:
 		if fn, ok := info.Uses[x].(*types.Func); ok {
-			return b.ids.funcID(fn)
+			return b.funcRef(fn)
 		}
 	case *ast.SelectorExpr:
 		if sel := info.Selections[x]; sel != nil {
 			if sel.Kind() != types.FieldVal {
-				return b.ids.funcID(sel.Obj().(*types.Func)) // s.handle, (*T).M
+				return b.funcRef(sel.Obj().(*types.Func)) // s.handle, (*T).M
 			}
 		} else if fn, ok := info.Uses[x.Sel].(*types.Func); ok {
-			return b.ids.funcID(fn) // pkg.Func
+			return b.funcRef(fn) // pkg.Func
 		}
 	}
 	return ""

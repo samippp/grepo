@@ -118,10 +118,7 @@ func Compare(res *load.Result, pkgs []*packages.Package, cg *graph.CallGraph) *R
 			if len(es) == 0 {
 				ifaceNone.add("%s → %s @ %s", c.Caller, c.Callee, c.Pos)
 			}
-			iface := tr.owner[c.Callee] // the interface's ID, from its node
-			if iface == "" {
-				iface = interfaceID(c.Callee) // from outside the repo: no node, but Implementations can hold it
-			}
+			iface := tr.owner[c.Callee] // the interface's ID, from its node: External outside the repo
 			for _, e := range es {
 				line := fmt.Sprintf("%s → %s @ %s: target %s (%s)", c.Caller, c.Callee, c.Pos, e.callee, e.targetType)
 				switch {
@@ -253,6 +250,9 @@ func newTranslator(res *load.Result, pkgs []*packages.Package, cg *graph.CallGra
 		if f.Name == "init" && f.Receiver == nil && f.Owner == "" {
 			t.initByPos[f.Pos] = f.ID
 		}
+	}
+	for _, f := range cg.External {
+		t.owner[f.ID] = f.Owner
 	}
 	for _, ty := range cg.Types {
 		t.repoTypes[ty.ID] = true
@@ -451,16 +451,6 @@ func calleeList(edges []edge) string {
 // methodName is the part after the last dot: "(pkg.Getter).Get" → "Get".
 func methodName(id string) string {
 	return id[strings.LastIndex(id, ".")+1:]
-}
-
-// interfaceID is the interface an interface method's ID names:
-// "(io.Writer).Write" → "io.Writer". "" if id isn't a method's.
-func interfaceID(id string) string {
-	i := strings.LastIndex(id, ").")
-	if !strings.HasPrefix(id, "(") || i < 0 {
-		return ""
-	}
-	return id[1:i]
 }
 
 // nearby finds an unmatched VTA edge with c's caller and callee within 3 lines.
