@@ -7,13 +7,14 @@
 // and is registered in newRootCmd.
 //
 // root.go also sets up logging from the global flags (-v/--verbose,
-// --log-format) and hands the logger to every command through app.
+// --log-format), hands the logger to every command through app, and turns a
+// command's error into the exit code, as grep's.
 //
 // Commands:
 //   - analyze (analyze.go): analyze a GitHub link or local path and output its
 //     package and call graphs as JSON.
 //   - callers (callers.go): every site that can call a function, grep-style.
-//     Query commands share query.go: loading, positions, exit codes.
+//     Query commands share querycmd.go: loading and positions.
 //   - vta-diff (vtadiff.go, hidden): compare the call graph with x/tools' VTA.
 package cli
 
@@ -90,4 +91,24 @@ func Execute() error {
 		}
 	}
 	return err
+}
+
+// errNoResults is a query that ran and found nothing: exit code 1, as grep's.
+var errNoResults = errors.New("no results")
+
+// reportedError is an error the command already printed to stderr, so
+// Execute doesn't log it again.
+type reportedError struct{ error }
+
+// ExitCode is the process exit code for an error from Execute, as grep's:
+// 0 for none, 1 for a query that found nothing, 2 for anything else.
+func ExitCode(err error) int {
+	switch {
+	case err == nil:
+		return 0
+	case errors.Is(err, errNoResults):
+		return 1
+	default:
+		return 2
+	}
 }

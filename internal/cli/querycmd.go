@@ -1,6 +1,6 @@
-// query.go holds what the query commands (callers, and later callees, state,
+// querycmd.go holds what the query commands (callers, and later callees, state,
 // impact, find) share: loading a repo's graph, picking the package a name
-// prefers, printing positions grep-style, and exit codes.
+// prefers, and printing positions grep-style. Exit codes are root.go's.
 //
 // For now each query loads the repo from source, without the store: the store
 // will keep what queries read once the commands settle it (docs/architecture.md,
@@ -10,7 +10,6 @@ package cli
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -29,26 +28,6 @@ import (
 // quiet is the annotation a query command sets: its Info logs are left out
 // unless -v, like grep, which prints nothing but its results.
 const quiet = "quiet"
-
-// errNoResults is a query that ran and found nothing: exit code 1, as grep's.
-var errNoResults = errors.New("no results")
-
-// reportedError is an error the command already printed to stderr, so
-// Execute doesn't log it again.
-type reportedError struct{ error }
-
-// ExitCode is the process exit code for an error from Execute, as grep's:
-// 0 for none, 1 for a query that found nothing, 2 for anything else.
-func ExitCode(err error) int {
-	switch {
-	case err == nil:
-		return 0
-	case errors.Is(err, errNoResults):
-		return 1
-	default:
-		return 2
-	}
-}
 
 // repoGraph is a repo loaded for queries.
 type repoGraph struct {
