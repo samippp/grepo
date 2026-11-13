@@ -1,24 +1,17 @@
-// querycmd.go is what the query commands share: loading a repo's graph and
-// printing positions grep-style. For now queries load from source, without
-// the store (docs/architecture.md, Queries).
+// querycmd.go is what the query commands share: a module's graph indexed for
+// queries, and positions printed grep-style. For now queries load from
+// source, without the store (docs/architecture.md, Queries).
 
 package cli
 
 import (
-	"context"
 	"fmt"
 	"io"
-	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
-	"time"
 
-	"github.com/samippp/grepo/internal/graph"
-	"github.com/samippp/grepo/internal/load"
-	"github.com/samippp/grepo/internal/logging"
 	"github.com/samippp/grepo/internal/query"
-	"github.com/samippp/grepo/internal/source"
 )
 
 // quiet is the annotation a query command sets to hide Info logs unless -v.
@@ -32,62 +25,23 @@ type repoGraph struct {
 	base   string // printed paths are relative to it
 }
 
-// loadRepoGraph builds the graph of the whole module holding arg, a
-// directory or GitHub link, since callers can be anywhere in it. Names
-// prefer the package in arg's directory.
-func loadRepoGraph(ctx context.Context, log *slog.Logger, arg string) (*repoGraph, error) {
-	start := time.Now()
-	repo, err := source.Resolve(ctx, arg, log)
-	if err != nil {
-		return nil, err
-	}
-	dir, err := filepath.Abs(repo.Dir)
-	if err != nil {
-		return nil, err
-	}
-	root := moduleRoot(dir)
-
-	cb := graph.NewCallGraphBuilder(root)
-	res, err := load.Load(ctx, root, nil, log, cb.Add)
-	if err != nil {
-		return nil, err
-	}
-	pg := graph.BuildPackageGraph(res)
-	cg, _, err := cb.CallGraph()
-	if err != nil {
-		return nil, err
-	}
-	log.Info("built graph", "functions", len(cg.Functions), "calls", len(cg.Calls), "took", logging.Since(start))
-
-	rg := &repoGraph{ix: query.New(pg, cg), root: root, base: root}
-	for _, p := range res.Packages {
-		if p.Dir == dir {
+// newRepoGraph indexes m for queries. Names prefer the package in the
+// directory asked about.
+func newRepoGraph(m *module) *repoGraph {
+	rg := &repoGraph{ix: query.New(m.pg, m.cg), root: m.res.Dir, base: m.res.Dir}
+	for _, p := range m.res.Packages {
+		if p.Dir == m.dir {
 			rg.prefer = p.PkgPath
 		}
 	}
 	// A local repo's paths are relative to the working directory, so they're
 	// clickable; a clone's are the repo's own.
-	if repo.URL == "" {
+	if m.repo.URL == "" {
 		if wd, err := os.Getwd(); err == nil {
 			rg.base = wd
 		}
 	}
-	return rg, nil
-}
-
-// moduleRoot is the nearest directory at or above dir holding go.mod, or
-// dir if none does (loading then reports the error).
-func moduleRoot(dir string) string {
-	for d := dir; ; {
-		if _, err := os.Stat(filepath.Join(d, "go.mod")); err == nil {
-			return d
-		}
-		parent := filepath.Dir(d)
-		if parent == d {
-			return dir
-		}
-		d = parent
-	}
+	return rg
 }
 
 // printer prints positions and the source lines at them.

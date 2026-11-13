@@ -5,7 +5,8 @@
 //   - callers: every site that can call a function, grep-style.
 //   - vta-diff (hidden): compare the call graph with x/tools' VTA.
 //
-// Query commands share querycmd.go; root.go sets up logging and exit codes.
+// module.go loads the module every command is about; query commands share
+// querycmd.go; root.go sets up logging and exit codes.
 package cli
 
 import (

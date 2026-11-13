@@ -8,10 +8,7 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/samippp/grepo/internal/graph"
-	"github.com/samippp/grepo/internal/load"
 	"github.com/samippp/grepo/internal/logging"
-	"github.com/samippp/grepo/internal/source"
 	"github.com/samippp/grepo/internal/vtadiff"
 )
 
@@ -28,25 +25,14 @@ func newVTADiffCmd(a *app) *cobra.Command {
 			if len(args) == 1 {
 				arg = args[0]
 			}
-			ctx := cmd.Context()
-
-			repo, err := source.Resolve(ctx, arg, a.log)
-			if err != nil {
-				return err
-			}
-			// go/packages: SSA needs its packages, and the graph must share their objects.
-			res, pkgs, err := load.GoPackages(ctx, repo.Dir, a.log)
-			if err != nil {
-				return err
-			}
-			cg, _, err := graph.BuildCallGraph(res) // go/packages: nothing from the store, no shares
+			m, err := loadModule(cmd.Context(), a.log, arg, loadOptions{goPackages: true})
 			if err != nil {
 				return err
 			}
 
 			t := time.Now()
-			report := vtadiff.Compare(res, pkgs, cg)
-			a.log.Info("compared with VTA", "took", logging.Since(t))
+			report := vtadiff.Compare(m.res, m.pkgs, m.cg)
+			m.log.Info("compared with VTA", "took", logging.Since(t))
 			return report.Write(cmd.OutOrStdout(), examples)
 		},
 	}
