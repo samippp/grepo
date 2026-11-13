@@ -5,11 +5,13 @@ How grepo turns a Go repository into a graph, how the graph is shaped, and the d
 ## 1. Pipeline
 
 ```
-GitHub link ──► source ──► load ─────────────────► graph ──► JSON (stdout / -o)
+GitHub link ──► source ──► load ─────────────────► graph ──────────────────────────► JSON (analyze: stdout / -o)
                clone       go list + go/types;      BuildPackageGraph  → packages + import edges
                + commit    each repo package is     CallGraphBuilder   → types, variables, functions,
                            walked once it's checked   (Add per package,   calls, implementations
                                                        CallGraph merges)
+                                                          └──► query ──► callers: path:line lines, or --json
+                                                               names → functions, sites that reach them
 ```
 
 | Package | Role |
@@ -17,8 +19,9 @@ GitHub link ──► source ──► load ────────────
 | `internal/source` | GitHub link → shallow clone in the user cache, plus the commit hash. Local paths work too. |
 | `internal/load` | Loads packages with `go list` and `go/types`, handing each repo package to a walk once its types are ready (`go/packages` for `vta-diff` and `--loader packages`). |
 | `internal/graph` | Pure transformation: no I/O, no logging, sorted deterministic output. |
+| `internal/query` | Indexes a graph for questions: what a name means, which sites reach a function (Queries). |
 | `internal/logging` | `slog` setup; logs to stderr, results to stdout. |
-| `internal/cli` | `analyze`, plus the hidden dev command `vta-diff`. |
+| `internal/cli` | `analyze`, `callers`, plus the hidden dev command `vta-diff`. |
 | `internal/vtadiff` | Compares grepo's call graph with x/tools' VTA and reports differences. |
 
 ## 2. The graph
@@ -98,7 +101,7 @@ Func      assign / construct: the function the written value is, like Arg.Func
           (cobra.Command{RunE: func…}, s.onErr = h); "" otherwise
 ```
 
-**`Implementation`**: a concrete repo type satisfies a repo interface.
+**`Implementation`**: a concrete repo type satisfies an interface: one declared in the repo, or one from outside it that the repo calls methods through (`io.Writer`, `error`), which has no node, like a callee outside the repo.
 
 ```
 Type, Interface   type IDs
@@ -120,7 +123,7 @@ PointerOnly       only *Type implements it
    (function)   Package  (PackageGraph node)
 ```
 
-Every reference is an ID string, and every ID resolves to a node. Exceptions by design: a dynamic call's empty callee, and callees outside the repo (e.g. `fmt.Println`), which are kept but have no node.
+Every reference is an ID string, and every ID resolves to a node. Exceptions by design: a dynamic call's empty callee, and callees and implemented interfaces outside the repo (e.g. `fmt.Println`, `io.Writer`), which are kept but have no node.
 
 Example: what can `lookup` reach through `g.Get(1)`?
 
@@ -214,7 +217,8 @@ CallGraphBuilder.Add (a load.Walk: each repo package during the load; BuildCallG
 ### Interface resolution (M1b)
 - Record facts (`Implementation`) instead of "might call" edges, which would be noisy (caddy's `Module` has 137 implementations).
 - `PointerOnly` distinguishes `*T` from `T`.
-- Repo interfaces and repo concrete types only (outside interfaces: #14). Generic and empty interfaces are skipped.
+- Repo concrete types. Interfaces declared in the repo, and those from outside it that the repo calls through (`w.Write` on an `io.Writer`, `err.Error()`): the interface the call names, the embedded one when the method comes from an embedded interface. That's the set `callers` needs, since a call through an interface nothing calls through doesn't exist. Not yet (the rest of #14): outside interfaces only outside code calls through (`Handler` implements `http.Handler`, but only `net/http` calls `ServeHTTP` through it). Generic, unnamed and empty interfaces are skipped.
+- Checked with `vta-diff` on caddy, which now takes the interface from the callee's ID when it has no node: interface targets confirmed 4,258 → 5,859, outside the repo 1,812 → 211, of which 203 have a target type outside the repo (`*testing.T` behind `testing.TB`) and 8 go through unnamed interfaces; none missing an implementation.
 - Matched after every package is built, from each package's stored method sets (see Implementations from summaries), so a cached package takes part without type-checking.
 - A first-method-key index picks candidates; the method sets decide.
 
@@ -298,12 +302,12 @@ CallGraphBuilder.Add (a load.Walk: each repo package during the load; BuildCallG
 - Tests: `TestWalk`: each repo package is walked once, with syntax and type information, both nil afterwards with `Types` kept, and `repo` is exactly the repo packages. `TestWalkFromStore`: a package from the store is walked with its share and no syntax, the broken one from source, and no share is kept. `TestCallGraphBuilderMatchesBuildCallGraph`: byte-identical JSON on the fixture. `TestCallGraphBuilderKeepsNoSyntax`: after the graph and a GC, no walked `*ast.File` or `*ast.FuncLit` is reachable (weak pointers); with closure IDs kept, it fails. The store's graph tests run both ways, after the load and during it.
 
 ### Implementations from summaries (M2a)
-- A cached package has no type-checker objects, so `types.Implements` can't run on it. Each package stores a `typeSummary` instead: its concrete types' value and pointer method sets, and its interfaces' method sets (embedded ones included), as method key → signature key. Matching reruns every time over all summaries, so a new interface in one package is matched against unchanged types in others.
+- A cached package has no type-checker objects, so `types.Implements` can't run on it. Each package stores a `typeSummary` instead: its concrete types' value and pointer method sets, and the method sets (embedded ones included) of the interfaces it declares or calls through, as method key → signature key. Several packages can list the same outside interface; it's matched once. Matching reruns every time over all summaries, so a new interface in one package is matched against unchanged types in others.
 - Not `gcexportdata` plus `types.Implements`: export data holds package-level declarations only, and local types (`announce.namer`, `spawn$1.job`) take part in implementations.
 - Signature keys are equal exactly when the type checker's identity holds: param names dropped, aliases resolved, `byte` as `uint8`, `...T` kept apart from `[]T`, local types by their grepo ID (two local `result`s both print as `store.result`), and unexported method names qualified by their package (`model`'s `seal` isn't `store`'s).
 - Interfaces with type terms (`interface{ ~int; String() string }`) are left out, though `types.Implements` matches them: nothing holds a value of one, and caddy, bubbletea and lo have none with methods. Summarizing type sets isn't worth it.
 - Summaries are plain strings and maps: they're stored as they are (JSON, like the rest of a share).
-- Tests: `model/impls.go` and `store/impls.go` hold one case per rule above; matching from summaries, after a JSON round trip, must give exactly what `types.Implements` gives on the fixture (the old matcher, kept in the test as the oracle).
+- Tests: `model/impls.go` and `store/impls.go` hold one case per rule above, `store/outside.go` an `io.Writer` and an `error`; matching from summaries, after a JSON round trip, must give exactly what `types.Implements` gives on the fixture, over the repo's interfaces and the outside ones a call goes through (the old matcher, kept in the test as the oracle).
 
 ### Loading (M2a)
 - Our own loader: `go list` metadata plus `go/types` directly, replacing `go/packages`. Dependencies are type-checked from source, not compiled.
@@ -326,6 +330,7 @@ CallGraphBuilder.Add (a load.Walk: each repo package during the load; BuildCallG
 - Tests: `TestStdlibPositions` pins the `$GOROOT` naming for both loaders. `internal/load/testdata/mod` adds what `testdata/simple` lacks (a dependency outside the module through `replace`, a build-tagged file, a test file, `unsafe` sizes, `go 1.21` with a go1.22 feature, type errors). On both fixtures, the loader must describe exactly as `go/packages` does: packages, files, imports, errors, scope, file versions, and every `Defs`, `Uses`, `Implicits`, `Selections`, `Instances`, `Types` and `Scopes` entry, by position.
 
 ### Store (M2a)
+- Paused (2026-11-12): queries come first, since what they read decides what the store should keep (Queries, below). Measurements since step 1, which change the plan below, are on #44: where filling a store spends its time (mostly flushing deep export data to disk), and skipping export data that's far bigger than its source.
 - Goal (rescoped, #44): unchanged packages aren't walked again. The store keeps each repo package's graph share, the part that costs and the part later work reuses (the query layer, imported graphs, data-flow analysis); types come from source. It started as "unchanged packages aren't type-checked again", caching export data too, which measured as a loss (below).
 - Why rescoped (Kubernetes, after #42 with export data read in parallel, #43): `--no-cache` 8.6s (load after `go list` 1.84s, call graph 2.26s); warm 7.1–7.4s (load 2.0–2.2s, call graph 1.05–1.16s); filling an empty store 21.1s (load 11.09s, saving shares 2.60s). Type-checking every package on every core, dependencies without bodies, is no slower than reading their deep export data, so a warm run saves only the walk (~1.3s), while encoding 763 MB of export data (83.7s summed over 12 threads, ~7s wall) and writing it (2.7s, serial) make filling cost ~12.5s more. That comes back fully after every rebuild of grepo (its hash is in every key) and partly after every edit. caddy: `--no-cache` 1.25–1.43s, warm 0.83–0.86s, filling 4.5s. Export data was cached because `go/packages` was slow with a cold build cache; the own loader removed that reason.
 - Plan (#44), each step measured before the next, on Kubernetes and caddy: a repo package from the store is type-checked from source without bodies, like a dependency, and its share decoded, and its row holds no export data (no round-trip risk such as `borrowsMethods` for repo packages); dependencies' export data stays only where it measurably beats checking them without bodies, else it goes, with its keys' `Identity`, `borrowsMethods` and the parallel reads (#43); warm runs mark rows used only when stale (all 3,625 rewritten each run: 0.64–0.72s, serial) and decode shares in parallel; shares are saved without the serial 2.6s; rows are pruned by last use. Targets: a warm run clearly faster than `--no-cache`, filling within ~20% of it, a run after an edit never slower than it, output byte-identical.
@@ -361,6 +366,22 @@ CallGraphBuilder.Add (a load.Walk: each repo package during the load; BuildCallG
 - Later, beyond #44: caching file hashes by path, mtime and size; the cut-off; caching `go list` (2.1s of Kubernetes' warm run, but its output depends on every file's imports).
 - Tests: `internal/store` round trips, replacing, marking used, two connections saving at once, shares (saved with a row or later, kept when the row is saved again without one, none without a row) and an old schema dropped. `testdata/mod` copied to a temp dir: a load through the store describes like one without; the next checks only repo packages. After each edit to `dep` (a body, a new method, its `go` version, its `replace` moved), a load through the store describes like one without and checks only the repo packages and `dep`. `GOPROXY` reuses every row; the repo's location reuses the stdlib's and module cache's but not hashed packages', whose positions must stay in the copy loaded; another `GOARCH` reuses none. Each key input changes the key (`TestPackageKey`); `fileIdentity` covers the stdlib, a `devel` toolchain, the module cache, a replacement, a local `replace`, vendor and a path beside the module cache. Repo packages (`testdata/mod`): one with a row and a share comes from the store with its share and no syntax, its types checked from source (its unexported declarations in scope) and its row without export data, though it declares an interface defined from another named one (`borrow.go`); the broken one has no row; editing it or its dependency checks it again under a new key; a row without a share isn't rewritten. Graphs (`testdata/simple`): built from the store, byte-identical to walked; each of the 7 sets of packages walked while the rest come from the store (store embeds model's unexported `seal`, reads its alias and const) gives the walked graph; so does a build after each of nine edits (a body in each package, a field, a method making a type implement an interface in the other package and the reverse, a removed file, a new repo import, a file excluded by build tags), checking only the edited packages and their importers; a share that can't be decoded fails the build, naming the package. On caddy, lo and Kubernetes, dropping a random half of a repo's shares from a filled store and running again gives `--no-cache`'s output (Kubernetes: ~800 packages walked against imports from export data, three times).
 
+### Queries (M2b, M3)
+- Commands answer one question each, grep-style: one result per line on stdout as `path:line: ...`, clickable in editors and terminals and usable as a quickfix list; logs on stderr, Info only with `-v`; `--json` for scripts and agents, one object per run with IDs in full and positions as printed. Exit codes as grep's: 0 found, 1 nothing found, 2 an error (an ambiguous name too).
+- `internal/query` indexes the graph (`graph.PackageGraph`, `graph.CallGraph`) and answers from it, reading nothing else, so it works however the graph was built. Commands in `internal/cli` load, ask and print. `--json` is a contract with agents; the store's encoding stays internal.
+- Paths are relative to the current directory for a local repo, so they're clickable where the command ran; a clone's are the repo's own. Source lines are read from the files when printed, not stored.
+- Names: an ID, or the name qualified as much as needed: `Get`, `Store.Get`, `(*Store).Get`, `store.Store.Get`, a path suffix (`caddyhttp/reverseproxy.Handler.ServeHTTP`); type args are ignored. The package in the directory asked about wins a tie (on caddy, 40 of 2,003 names are ambiguous; `Handler.ServeHTTP` matches 6 types). Otherwise the candidates are listed on stderr as `path:line: name`, each name one that picks it (the ID when two packages share a name), and the command exits with 2. Functions outside the repo are named from the IDs of calls to them (`os.Exit`, `informers.NewSharedInformerFactory`; their package name guessed from the path), and a repo function of the same name wins over them. Closures and methods of local types are found by ID only.
+- `callers <function>`: the sites that can reach it, in three groups, each by position (lines as numbers):
+  - direct: calls it, by name or through the interface method it is;
+  - interface, `[via I]`: calls a method of an interface its type implements (Implementations, outside interfaces included), so it may run there;
+  - value, `[passed to f]` or `[stored in field]`: passes or stores it as a func value (`Arg.Func`, `Access.Func`), as in `http.HandleFunc("/", h.serve)` or `cobra.Command{RunE: run}`. Calls through func values themselves stay dynamic.
+  - `--direct` keeps only the first group. Not followed yet: a promoted method reached through an interface the embedding type implements but its own type doesn't.
+- Each query loads the whole module from source, without the store: a directory inside a module loads that module, since callers can be anywhere in it. caddy 1.5s, Kubernetes ~9s on the WSL machine. The store comes back once the commands settle what it should keep:
+  - Per-package entries shaped for lookups (names, calls by callee, accesses by target, method sets), so a query reads only the packages that can matter (a function's callers are in its package and its importers), as gopls keeps per-package indexes. Not SQL rows of every call (203k on Kubernetes), which would bring back the cost of writing them.
+  - One entry per repo: its packages, their keys, and its files' mtimes and sizes, so a query on an unchanged repo skips `go list`.
+  - To check: whether a package's share depends only on its imports' types. Then its key could hold their API instead of their keys, and an edit to a function body would rebuild one package instead of every importer (666 of 3,675 packages after editing Kubernetes' `pkg/features`).
+- Tests: `query` (a hand-built graph): each name form, ties and the preferred package, outside functions and the repo's winning over them, each kind of site and their order, short names. `cli` (`testdata/simple`): `callers`' lines, `--direct`, `--json`, the ambiguous list, the preferred package, and each exit code.
+
 ### Process
 - Fixture-first: failing tests before implementation; fixture additions are appended so existing line numbers don't move.
 - Dispatch functions per node kind (`handleGenDecl` → `handleTypeSpec` / `handleValueSpec`); helpers are extracted only when they remove real noise.
@@ -373,7 +394,7 @@ CallGraphBuilder.Add (a load.Walk: each repo package during the load; BuildCallG
 |---|---|
 | #8: type arguments on generic calls | deferred to M7 |
 | Closures through locals | `inc := func(){…}; inc()` stays dynamic; the closure node exists, but nothing links the call to it |
-| #14: implementations of outside interfaces | open |
+| #14: implementations of outside interfaces | partly: those the repo calls through are matched; those only outside code calls through aren't (Interface resolution) |
 | Constraint interfaces | interfaces with type terms get no implementations (Implementations from summaries) |
 | Aliasing through locals | `m := s.users; m[k] = v` writes into `Store.users` but gets no `content` edge; the `escape` at `m := s.users` makes the gap visible |
 | Pointer contents | `s.db.Close()`, `f(s.db)` may change what `db` points to; no edge by design (only direct writes like `s.db.x = 1` give `content`) |

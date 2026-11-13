@@ -18,7 +18,7 @@ One command, one question, answered from the terminal:
 - Graphs can also come out as Mermaid, which GitHub renders in issues, PRs and READMEs, or as DOT.
 - Later runs reuse what an earlier run built, so repeat questions on a large repo don't start over.
 
-Planned commands (M3):
+Commands (`callers` works now; the rest are planned, M3):
 
 ```sh
 grepo callers Store.Get        # who calls it, interface calls included
@@ -32,7 +32,9 @@ grepo pkg --format mermaid     # the package graph, as a diagram for an issue or
 
 **M1: call graph.** `grepo analyze` takes a GitHub link or local path and outputs JSON: the package import graph, plus types, variables, functions, calls (with `Through`), interface implementations, and writes, reads and escapes of package vars and struct fields.
 
-**M2a (in progress): incremental store.** Later runs reuse each unchanged package's share of the graph from a SQLite store in your user cache directory; `--no-cache` skips it.
+**M2a (paused): incremental store.** `analyze` reuses each unchanged package's share of the graph from a SQLite store in your user cache directory; `--no-cache` skips it. Paused while the commands settle what the store should keep.
+
+**M3 (in progress): commands.** `grepo callers <function>` prints every site that can call a function: direct calls, calls through an interface it implements (`io.Writer` and `error` too), and places it's passed or stored as a func value. Commands load the repo from source each time, for now.
 
 ## Usage
 
@@ -40,7 +42,22 @@ grepo pkg --format mermaid     # the package graph, as a diagram for an issue or
 go build -o grepo.exe ./cmd/grepo
 ./grepo.exe analyze https://github.com/spf13/cobra     # GitHub link
 ./grepo.exe analyze ./path/to/repo -o graph.json       # local path, JSON to a file
+
+cd path/to/repo
+grepo callers Store.Get                          # path:line: calling function: source line
+grepo callers --json '(*Server).Serve' ./server  # JSON; ./server's package wins a tie
+grepo callers os.Exit                            # functions outside the repo work too
 ```
+
+```
+$ grepo callers App.Emit        # in caddy
+modules/caddyhttp/reverseproxy/healthchecks.go:479: (*reverseproxy.Handler).doActiveHealthCheck$1: h.events.Emit(h.ctx, "unhealthy", map[string]any{"host": hostAddr})
+modules/caddyhttp/reverseproxy/healthchecks.go:502: (*reverseproxy.Handler).doActiveHealthCheck$2: h.events.Emit(h.ctx, "healthy", map[string]any{"host": hostAddr})
+modules/caddytls/tls.go:1088: (*caddytls.TLS).onEvent: evt := t.events.Emit(t.ctx, eventName, data)
+context.go:296: (caddy.Context).emitEvent: return ctx.cfg.eventEmitter.Emit(ctx, name, data)  [via caddy.eventEmitter]
+```
+
+Query commands exit like grep: 0 when they find something, 1 when they don't, 2 on an error, including a name that matches several functions (they're listed, each with a name that picks it).
 
 Logging flags (available on every command):
 
@@ -59,11 +76,11 @@ Requirements:
 ## Pipeline
 
 ```
-GitHub link ──► source ──► load ──► graph ──► store ──► query* ──► cli commands*: path:line text, --json, --format mermaid|dot
- or local path                                                └──► grepo mcp*: the same queries as MCP tools, for agents
+GitHub link ──► source ──► load ──► graph ──► store ──► query ──► cli commands: path:line text, --json, --format mermaid|dot*
+ or local path                                               └──► grepo mcp*: the same queries as MCP tools, for agents
 ```
 
-`*` = planned.
+`*` = planned. Commands skip the store for now.
 
 ## Layout
 
@@ -74,6 +91,7 @@ internal/logging/  slog setup
 internal/source/   GitHub link or local path → directory on disk
 internal/load/     go list + go/types: packages, syntax and types
 internal/graph/    builds graphs from loaded packages
+internal/query/    indexes a graph for questions: what a name means, who calls it
 internal/store/    SQLite store of packages' graph shares, in the user cache
 internal/vtadiff/  dev tool: compares the call graph with x/tools' VTA
 ```
@@ -85,12 +103,12 @@ Milestone numbers are kept as they were, so references in issues and the docs st
 - **M0:** GitHub link input, package import graph ✅
 - **M1: the graph**
   - **M1a:** symbols, signatures and direct calls (hand-written AST walker) ✅
-  - **M1b:** interface calls resolved to their implementations ✅
+  - **M1b:** interface calls resolved to their implementations ✅, including interfaces from outside the repo that it calls through (`io.Writer`, `error`) ✅; outside interfaces only outside code calls through, the rest of #14
   - **M1c:** check the call graph against x/tools' VTA (`grepo vta-diff`) ✅
   - **M1d:** writes to package vars and struct fields ✅
   - **M1e:** reads and escapes of package vars and struct fields, plus `Through` on calls, for `impact`, dead-field detection and safer mutability claims ✅
 - **M2: store + query layer** (modeled on gopls' cache)
-  - **M2a: incremental store**
+  - **M2a: incremental store** (paused: the commands decide what it keeps)
     - own loader: `go list` + `go/types`, dependencies type-checked from source without bodies ✅
     - SQLite store, one row per package, keyed by a hash of its files, its dependencies' keys, the build config and grepo's binary ✅
     - implementations from per-package method sets and interfaces, matched across packages afterwards ✅
@@ -101,11 +119,15 @@ Milestone numbers are kept as they were, so references in issues and the docs st
       - dependencies' export data only where it measurably beats checking them without bodies
       - warm runs: rows marked used only when stale, shares decoded in parallel; pruning by last use
       - targets: a warm run clearly faster than `--no-cache`, filling the store within ~20% of it, a run after an edit never slower
+    - when it resumes (measurements on #44): store what queries read (M2b); skip export data far larger than its source (Kubernetes: filling 19.0s → 9.9s, warm 5.5s → 5.1s); try a file per entry without `fsync`, as Go's build cache and gopls do, against SQLite, since flushing export data to disk is most of what filling costs
   - **M2b: query layer**
-    - short names (`Store.users`, `store.Get`) resolved to IDs, with ambiguity handling
-    - defaults to the package in the current directory
+    - short names (`Store.users`, `store.Get`) resolved to IDs, with ambiguity handling (functions ✅; vars and fields with `state`)
+    - defaults to the package in the current directory ✅
+    - the graph indexed for questions (`internal/query`): names, calls by callee, implementations ✅
+    - the store keeps what queries read, per package (names, calls by callee, accesses by target, method sets) plus one entry per repo, so a query reads only the packages that can matter
     - loads only what a command needs (downstream: the package and its imports; upstream: the module)
     - a query on an unchanged repo doesn't run `go list` again (file hashes cached by path, mtime and size)
+    - to check: whether a package's share depends only on its imports' API, so an edit to a function body rebuilds one package instead of every importer
   - **M2c: cold start**, the first run on a fresh clone, which is a contributor's first impression
     - metadata-only first load (`go list`, no type-checking): package graph right away
     - background indexing with progress; commands use whatever is ready
@@ -113,9 +135,12 @@ Milestone numbers are kept as they were, so references in issues and the docs st
     - `--no-cgo`
     - import a graph built elsewhere (e.g. by CI), then rebuild only what changed locally
 - **M3: CLI commands** (grep-style `path:line` output, `--json` on every command, `--format mermaid|dot` on graphs)
+  - grep's exit codes (0 found, 1 none, 2 error) ✅; positions with columns (`path:line:col`), so editors jump to the exact call
+  - order: `callers`, `callees`, `find`, `state`, `pkg`, `entry`, `impact`, then `grepo mcp`; each loads from source until the store keeps what they read
   - Working in code:
     - `state <type|var>`: who writes each field or var, by kind, with a role (config, live state, counter, no writes found)
-    - `callers` / `callees <func>`: call trees that expand interface calls into their implementations
+    - `callers <func>`: every site that can call it, directly, through an interface it implements or as a func value; functions outside the repo too (`os.Exit`) ✅
+    - `callees <func>`, and call trees for both, expanding interface calls into their implementations
     - `impact <symbol>`: everything that reaches it through calls and writes, rolled up by package
   - Finding your way:
     - `pkg [path]`: imports and imported-by, exported API ranked by callers, owned state and its writers, outside calls; with no path, the repo's packages ranked by how central they are

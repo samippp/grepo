@@ -14,6 +14,9 @@ import (
 // typeSummary is one package's types by method set. Maps go from method key
 // (unexported names qualified by package) to signature key; equal keys mean
 // identical methods. No generic types, empty interfaces or constraints.
+// Interfaces are those the package declares, and those it calls methods
+// through, which may be from outside the repo: several packages can list the
+// same one.
 type typeSummary struct {
 	Concrete   []concreteSummary `json:"concrete"`
 	Interfaces []ifaceSummary    `json:"interfaces"`
@@ -39,9 +42,7 @@ func (b *callGraphBuilder) summarize(tn *types.TypeName) {
 	}
 	t := tn.Type()
 	if iface, ok := t.Underlying().(*types.Interface); ok {
-		if iface.NumMethods() > 0 && iface.IsMethodSet() {
-			b.summary.Interfaces = append(b.summary.Interfaces, ifaceSummary{ID: b.ids.typeID(tn), Methods: b.ifaceMethods(iface)})
-		}
+		b.summarizeInterface(tn, iface)
 		return
 	}
 	b.summary.Concrete = append(b.summary.Concrete, concreteSummary{
@@ -49,6 +50,19 @@ func (b *callGraphBuilder) summarize(tn *types.TypeName) {
 		ValueMethods:   b.methodSet(t),
 		PointerMethods: b.methodSet(types.NewPointer(t)),
 	})
+}
+
+// summarizeInterface adds an interface to the package's summary, once: a
+// package can both declare an interface and call through it.
+func (b *callGraphBuilder) summarizeInterface(tn *types.TypeName, iface *types.Interface) {
+	if isGeneric(tn) || iface.NumMethods() == 0 || !iface.IsMethodSet() {
+		return
+	}
+	id := b.ids.typeID(tn)
+	if slices.ContainsFunc(b.summary.Interfaces, func(s ifaceSummary) bool { return s.ID == id }) {
+		return
+	}
+	b.summary.Interfaces = append(b.summary.Interfaces, ifaceSummary{ID: id, Methods: b.ifaceMethods(iface)})
 }
 
 // methodSet is t's methods, promoted ones included.
@@ -148,8 +162,13 @@ func (b *callGraphBuilder) tupleKeys(tuple *types.Tuple) []string {
 // under its first method key: a type without that method can't implement it.
 func matchImplementations(summaries []typeSummary) []Implementation {
 	byMethod := map[string][]ifaceSummary{}
+	seen := map[string]bool{}
 	for _, s := range summaries {
 		for _, iface := range s.Interfaces {
+			if seen[iface.ID] { // called through in several packages
+				continue
+			}
+			seen[iface.ID] = true
 			first := slices.Min(slices.Collect(maps.Keys(iface.Methods)))
 			byMethod[first] = append(byMethod[first], iface)
 		}

@@ -147,6 +147,12 @@ func TestCallGraphFunctions(t *testing.T) {
 		{ID: "(" + tRawWriter + ").Write", Name: "Write", Package: storePkg, Receiver: recv("", tRawWriter), Params: ps("p", "[]byte"),
 			Exported: true, Pos: iat("47"), Owner: tRawWriter},
 		{ID: storePkg + ".tagLimit", Name: "tagLimit", Package: storePkg, Results: ps("", "int"), Pos: "store/consts.go:6"},
+		// An io.Writer, and a call through io.Writer (store/outside.go).
+		{ID: "(*" + tBufWriter + ").Write", Name: "Write", Package: storePkg, Receiver: recv("", "*"+tBufWriter),
+			Params: ps("p", "[]byte"), Results: ps("", "int", "", "error"), Exported: true, Pos: "store/outside.go:10", Owner: tBufWriter},
+		{ID: storePkg + ".flush", Name: "flush", Package: storePkg, Params: ps("w", "io.Writer"), Pos: "store/outside.go:12"},
+		{ID: "(" + tFailure + ").Error", Name: "Error", Package: storePkg, Receiver: recv("", tFailure),
+			Results: ps("", "string"), Exported: true, Pos: "store/outside.go:17", Owner: tFailure},
 	}
 
 	// Closures have their own test.

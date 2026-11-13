@@ -63,6 +63,10 @@ func TestCallGraphCalls(t *testing.T) {
 		{Caller: mainPkg + ".describe", Callee: "(error).Error", Pos: "main.go:78", CallKind: InterfaceCall},
 		// n.Name() through a local interface: the callee has a node now.
 		{Caller: mainPkg + ".announce", Callee: "(" + tLocalNamer + ").Name", Pos: "main.go:101", CallKind: InterfaceCall},
+		// w.Write(nil) through io.Writer, from outside the repo: no node, but
+		// bufWriter's implementation of it is recorded (store/outside.go).
+		{Caller: storePkg + ".flush", Callee: "(io.Writer).Write", Pos: "store/outside.go:12", CallKind: InterfaceCall,
+			Args: []Arg{{Expr: "nil", Type: "untyped nil"}}},
 
 		// The reads fixture's calls (store/reads.go). Their Through is in TestCallGraphThrough.
 		{Caller: idValues, Callee: storePkg + ".use", Pos: rat("64"), CallKind: StaticCall, Args: []Arg{{Expr: "r.N", Type: "int"}}},

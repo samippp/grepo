@@ -65,9 +65,11 @@ type Variable struct {
 	Pos      string `json:"pos"`
 }
 
-// Implementation records that a concrete type satisfies an interface. Both
-// are repo types. Read it in either direction: what Store implements, or
-// what implements Getter.
+// Implementation records that a concrete type satisfies an interface. The
+// type is a repo type. The interface is declared in the repo, or the repo
+// calls methods through it (io.Writer, error), and then it has no node, like
+// a callee outside the repo. Read it in either direction: what Store
+// implements, or what implements Getter.
 type Implementation struct {
 	Type        string `json:"type"`                  // concrete type ID
 	Interface   string `json:"interface"`             // interface type ID

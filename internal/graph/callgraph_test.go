@@ -109,6 +109,8 @@ const (
 	tStringish    = modelPkg + ".Stringish"
 	tWriter       = storePkg + ".Writer"
 	tRawWriter    = storePkg + ".rawWriter"
+	tBufWriter    = storePkg + ".bufWriter"
+	tFailure      = storePkg + ".failure"
 )
 
 // fixtureLoad and fixtureCallGraph load and build testdata/simple once for
