@@ -27,10 +27,10 @@ func (b *callGraphBuilder) addCall(callerID string, call *ast.CallExpr) {
 // callee returns the ID of the function call refers to and the call's kind:
 // "" and dynamic if unknown. isCall is false for conversions and built-ins.
 func (b *callGraphBuilder) callee(call *ast.CallExpr) (id string, kind CallKind, isCall bool) {
-	info := b.pkg.TypesInfo
-	if tv := info.Types[call.Fun]; tv.IsType() || tv.IsBuiltin() {
+	if !b.isCall(call) {
 		return "", "", false // int64(n), len(x)
 	}
+	info := b.pkg.TypesInfo
 
 	var name *ast.Ident
 	switch fun := unindex(ast.Unparen(call.Fun)).(type) {
@@ -78,6 +78,12 @@ func unindex(e ast.Expr) ast.Expr {
 		return x.X
 	}
 	return e
+}
+
+// isCall reports whether call calls a function: not a conversion or a built-in.
+func (b *callGraphBuilder) isCall(call *ast.CallExpr) bool {
+	tv := b.pkg.TypesInfo.Types[call.Fun]
+	return !tv.IsType() && !tv.IsBuiltin()
 }
 
 // callKind classifies a call by its callee.

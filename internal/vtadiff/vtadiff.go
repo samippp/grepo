@@ -14,6 +14,7 @@ import (
 	"go/token"
 	"go/types"
 	"io"
+	"maps"
 	"path/filepath"
 	"slices"
 	"strconv"
@@ -202,12 +203,7 @@ func (r *Report) Write(w io.Writer, limit int) error {
 		}
 	}
 	fmt.Fprintf(&b, "\n== Expected differences (not compared) ==\n")
-	reasons := make([]string, 0, len(r.Expected))
-	for reason := range r.Expected {
-		reasons = append(reasons, reason)
-	}
-	slices.Sort(reasons)
-	for _, reason := range reasons {
+	for _, reason := range slices.Sorted(maps.Keys(r.Expected)) {
 		fmt.Fprintf(&b, "   %-45s %d\n", reason, r.Expected[reason])
 	}
 	_, err := io.WriteString(w, b.String())
