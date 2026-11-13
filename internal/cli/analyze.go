@@ -1,15 +1,8 @@
-// analyze.go implements `grepo analyze [github-link | path] [-o file]`.
-//
-// Flow: source.Resolve (clone the GitHub repo, or use the local path) →
-// load.Load (run the go toolchain, walking each repo package for the call
-// graph as soon as it's checked) → graph.BuildPackageGraph, and merging the
-// call graph → JSON to stdout or the --out file. Each stage logs what it did and
-// how long it took. Errors in individual packages are logged as warnings rather
-// than failing the run, so partly broken repos still produce output.
-//
-// Dependencies' types are cached in the shared store (internal/store), so a
-// later run doesn't type-check them again; --no-cache loads everything from
-// source. Planned: the graph is stored too, for the query layer and `grepo serve`.
+// analyze.go implements `grepo analyze`: source.Resolve → load.Load, walking
+// each repo package once it's checked → the package and call graphs as JSON.
+// Package errors are only warnings, so partly broken repos still give output.
+// The store caches dependencies' types and repo packages' graph shares;
+// --no-cache skips it.
 
 package cli
 
@@ -65,8 +58,7 @@ func newAnalyzeCmd(a *app) *cobra.Command {
 			if loader == "packages" {      // the go/packages path, for comparing loaders
 				res, _, err = load.GoPackages(ctx, repo.Dir, log)
 			} else {
-				// Each repo package is walked as soon as its types are ready,
-				// so its syntax can be dropped instead of held until the load ends.
+				// Walk each package once its types are ready, so its syntax can be dropped.
 				var dir string
 				if dir, err = filepath.Abs(repo.Dir); err != nil { // what Load reports as Result.Dir
 					return err
@@ -93,7 +85,7 @@ func newAnalyzeCmd(a *app) *cobra.Command {
 			var cg *graph.CallGraph
 			var shares map[string][]byte
 			if cb != nil {
-				cg, shares, err = cb.CallGraph() // packages were walked during the load: this merges them
+				cg, shares, err = cb.CallGraph() // walked during the load: this only merges
 			} else {
 				cg, shares, err = graph.BuildCallGraph(res)
 			}
@@ -116,7 +108,7 @@ func newAnalyzeCmd(a *app) *cobra.Command {
 				}
 			}
 
-			// Local paths have no source info, so leave the field out entirely.
+			// Local paths have no source info: leave it out.
 			var src *source.Repo
 			if repo.URL != "" {
 				src = repo

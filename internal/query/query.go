@@ -1,11 +1,6 @@
-// Package query answers questions about one repo's graph: which function a
-// name means, and every site that can reach it. It reads only the graph
-// (graph.PackageGraph and graph.CallGraph), so the commands work the same
-// however the graph was built. The CLI formats what it returns.
-//
-// The indexes here are what a query reads. The store will keep them per
-// package later, so a query on an unchanged repo needn't build the whole
-// graph (docs/architecture.md, Queries).
+// Package query answers questions about a repo's graph: which function a
+// name means, and every site that can reach it. It reads only the graph and
+// leaves formatting to its callers.
 package query
 
 import (
@@ -60,8 +55,8 @@ func New(pg *graph.PackageGraph, cg *graph.CallGraph) *Index {
 	for _, im := range cg.Implementations {
 		ix.impls[im.Type] = append(ix.impls[im.Type], im)
 	}
-	// Functions outside the repo have no node, but calls to them are kept:
-	// their IDs say enough to name them, so callers of os.Exit can be asked.
+	// Outside functions have no node, but calls name them: enough to ask for
+	// os.Exit's callers.
 	for id := range ix.byCallee {
 		if ix.funcs[id] != nil {
 			continue
@@ -120,17 +115,11 @@ func (e *AmbiguousError) Error() string {
 	return fmt.Sprintf("%s is ambiguous: %d functions match", e.Name, len(e.Candidates))
 }
 
-// Func returns the function name means: its ID, or its name qualified as
-// much as needed to pick it out: Get, Store.Get, store.Store.Get,
-// simple/store.Store.Get. Receivers can be written as in Go, (*Store).Get,
-// and type args are ignored, List[T].Push. A package qualifier is the
-// package's name or a suffix of its path. When several functions match and
-// exactly one is in the package prefer (an import path; "" for none), that
-// one wins. Closures and methods of local types are found by ID only.
-//
-// Functions outside the repo that it calls can be named too (os.Exit,
-// http.Server.Serve), but one in the repo wins over them: qualify the
-// outside one to get it.
+// Func returns the function name means: an ID, or a name qualified as much
+// as needed (Get, Store.Get, (*Store).Get, store.Store.Get, a path suffix),
+// type args ignored. Of several matches, the only one in package prefer
+// wins. Functions outside the repo match only when no repo function does.
+// Closures and local types' methods match by ID only.
 func (ix *Index) Func(name, prefer string) (*graph.Function, error) {
 	if f := ix.funcs[name]; f != nil {
 		return f, nil

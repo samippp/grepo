@@ -54,11 +54,9 @@ func (b *callGraphBuilder) callee(call *ast.CallExpr) (id string, kind CallKind,
 	return b.ids.funcID(fn), kind, true // funcID: List[int].Push → List[T].Push
 }
 
-// calledThrough adds the interface an interface call's method is declared on
-// to the package's summary, so types implementing it are matched even when
-// it's from outside the repo (io.Writer, error): that's the interface the
-// call names, embedded or not. Interfaces without a name (literals) have no
-// ID to match.
+// calledThrough adds the interface fn is declared on to the package's
+// summary, so its implementations are matched even when it's outside the
+// repo (io.Writer). Unnamed interfaces have no ID to match.
 func (b *callGraphBuilder) calledThrough(fn *types.Func) {
 	named, _ := receiver(fn.Origin())
 	if named == nil {

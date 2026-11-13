@@ -34,8 +34,7 @@ func newVTADiffCmd(a *app) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			// go/packages, not grepo's loader: SSA needs its packages, and the
-			// graph must share their objects to map SSA back onto grepo IDs.
+			// go/packages: SSA needs its packages, and the graph must share their objects.
 			res, pkgs, err := load.GoPackages(ctx, repo.Dir, a.log)
 			if err != nil {
 				return err

@@ -1,22 +1,12 @@
-// Package logging builds the *slog.Logger that grepo passes through its
-// pipeline. The CLI uses it now, and the web server will use it too.
+// Package logging builds grepo's *slog.Logger.
 //
-// Conventions:
-//   - Logs go to stderr, never stdout. stdout is reserved for results, so
-//     `grepo analyze <link> > graph.json` always produces clean JSON.
-//   - Pipeline packages take a *slog.Logger argument instead of using slog's
-//     global default. That lets the web server give each analysis job its own
-//     logger with fields such as job ID and repo attached to every line.
-//   - Pure packages (graph) don't log. Their callers time and log them.
+// Logs go to stderr; stdout is for results. Pipeline packages take a logger
+// argument rather than using slog's default; pure packages (graph) don't log.
 //
-// Levels:
-//   - Debug: details for diagnosing problems (git commands, directories). Shown with -v.
-//   - Info: what each stage did and how long it took. Query commands (callers)
-//     leave it out unless -v, like grep, which says nothing but its results.
-//   - Warn: something failed but the run continues (e.g. a package didn't load).
-//   - Error: the run failed.
-//
-// Never log LLM prompts, responses or API keys above Debug.
+// Levels: Debug for diagnosis (shown with -v), Info for what each stage did
+// and how long it took (hidden for query commands unless -v), Warn for a
+// failure the run survives, Error for a failed run. Never log LLM prompts,
+// responses or API keys above Debug.
 package logging
 
 import (
@@ -26,14 +16,13 @@ import (
 	"time"
 )
 
-// New returns a logger that writes to w, from level up. format is "text"
-// (readable, for terminals) or "json" (for the server and log tools).
+// New returns a logger writing to w from level up, as "text" or "json".
 func New(w io.Writer, format string, level slog.Level) (*slog.Logger, error) {
 	opts := &slog.HandlerOptions{Level: level}
 
 	switch format {
 	case "text":
-		// Timestamps are clutter in a terminal. JSON output keeps them.
+		// No timestamps in a terminal; JSON keeps them.
 		opts.ReplaceAttr = dropTime
 		return slog.New(slog.NewTextHandler(w, opts)), nil
 	case "json":
@@ -43,8 +32,7 @@ func New(w io.Writer, format string, level slog.Level) (*slog.Logger, error) {
 	}
 }
 
-// Since returns the time elapsed since t, rounded to the millisecond, for
-// "took" fields.
+// Since is the time since t, rounded to the millisecond, for "took" fields.
 func Since(t time.Time) time.Duration {
 	return time.Since(t).Round(time.Millisecond)
 }

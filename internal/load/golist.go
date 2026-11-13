@@ -1,5 +1,5 @@
-// grepo's own loader: `go list` for metadata, then parsing and type-checking
-// here, dependencies without function bodies. Replaces go/packages in Load.
+// grepo's loader: `go list` for metadata, then parsing and type-checking
+// here, dependencies without function bodies.
 
 package load
 
@@ -73,7 +73,7 @@ type loader struct {
 
 // goEnv is what the loader asks the go command for.
 type goEnv struct {
-	GOOS, GOARCH string // GOARCH: type sizes, which consts like unsafe.Sizeof(x) depend on
+	GOOS, GOARCH string // GOARCH sets type sizes: unsafe.Sizeof(x)
 	GOROOT       string // for naming stdlib files
 	GOVERSION    string
 	GOMODCACHE   string
@@ -110,10 +110,8 @@ func fromGoList(ctx context.Context, dir string, st *store.Store, log *slog.Logg
 			ld.repo[lp.ImportPath] = true
 		}
 	}
-	// Parsing and type-checking are CPU-bound: one package per core at a time.
-	// A package starts once its imports are done, so independent ones run in
-	// parallel and only the packages in progress hold syntax trees (repo
-	// packages too, with a walk).
+	// One package per core at a time, each once its imports are done, so only
+	// packages in progress hold syntax trees (repo ones too, with a walk).
 	var wg sync.WaitGroup
 	for _, c := range ld.checks {
 		wg.Go(func() { c.run(ld) })
@@ -150,13 +148,11 @@ func fromGoList(ctx context.Context, dir string, st *store.Store, log *slog.Logg
 	return res, nil
 }
 
-// goList runs `go list` on every package under dir and its dependencies.
-// -e reports broken packages instead of failing; no -compiled, so cgo files
-// are type-checked as written and no C compiler is needed.
-//
-// On a repo's first load, go list also downloads its dependencies, which can
-// take a while (caddy: 160 modules, 11s). It says so on stderr, line by line;
-// we log the first, since a silent wait looks hung, and count the rest.
+// goList runs `go list` on dir's packages and their dependencies. -e reports
+// broken packages instead of failing; without -compiled, cgo files are
+// checked as written, with no C compiler. A first load also downloads
+// dependencies, which go list reports on stderr: we log when that starts,
+// since a silent wait looks hung.
 func goList(ctx context.Context, dir string, log *slog.Logger) ([]*listed, error) {
 	cmd := exec.CommandContext(ctx, "go", "list", "-e", "-deps", "-json="+listFields, "--", "./...")
 	cmd.Dir = dir
@@ -254,8 +250,8 @@ func (c *check) run(ld *loader) {
 	ld.cpu <- struct{}{}
 	defer func() { <-ld.cpu }()
 
-	// With a store, a dependency's types can come from its export data, and
-	// a repo package's graph share from its row, so it isn't walked.
+	// With a store: a dependency's types from its export data, a repo
+	// package's graph share from its row.
 	var srcs []source
 	cacheable := false
 	if ld.cache != nil {
@@ -283,8 +279,8 @@ func (c *check) run(ld *loader) {
 	ld.mu.Unlock()
 	saved := false
 	if ld.cache != nil {
-		// A repo package with errors is being worked on, and its messages
-		// hold absolute paths; dependencies' errors were dropped.
+		// No row for a repo package with errors: it's mid-edit, and its
+		// messages hold absolute paths.
 		saved = ld.cache.checked(c.key, tpkg, ld.fset, repo, cacheable && len(errs) == 0, c.saved)
 	}
 	close(c.done) // dependents only need the types, not this package's walk
@@ -301,12 +297,10 @@ func (c *check) run(ld *loader) {
 	}
 }
 
-// fromStore takes what it can of c from the store. A dependency's types are
-// its export data. A repo package needs its share, or it's checked in full,
-// since its walk needs the syntax; with one, it isn't walked, and its types
-// are checked from source without bodies, like a dependency's. Its export
-// data would hold only its exported API, and read back can differ from
-// source (borrowsMethods).
+// fromStore takes c from the store if it can: a dependency's types from its
+// export data, a repo package's share. A repo package's types are checked
+// from source without bodies: export data holds only the exported API, and
+// can differ from source (borrowsMethods).
 func (c *check) fromStore(ld *loader, srcs []source) bool {
 	if c.lp.DepOnly {
 		tpkg := ld.cache.load(c.key, c.lp.ImportPath, ld.fset, c.deps(ld))
@@ -324,8 +318,8 @@ func (c *check) fromStore(ld *loader, srcs []source) bool {
 	if srcs == nil { // a repo inside the module cache: its files have an identity, so weren't read for the key
 		srcs = readSources(c.lp)
 	}
-	// It had no errors when its row was saved, under this key; checked
-	// without bodies, it can report unused imports.
+	// It had no errors when saved under this key; without bodies it can
+	// report unused imports.
 	ignore := func(error) {}
 	c.types, _ = ld.typeCheck(c.lp, ld.parseFiles(c.lp, srcs, false, ignore), false, ignore)
 	c.pkg = c.newPackage(ld, c.types)
@@ -335,8 +329,7 @@ func (c *check) fromStore(ld *loader, srcs []source) bool {
 }
 
 // deps is the types of every package c imports, directly or not, by path:
-// all that reading its export data can reference. They're done, so their
-// types are set (their done channels closed before c's imports' did).
+// all its export data can reference. All are done, so their types are set.
 func (c *check) deps(ld *loader) map[string]*types.Package {
 	deps := map[string]*types.Package{}
 	seen := map[string]bool{}
@@ -383,11 +376,10 @@ func (c *check) newPackage(ld *loader, tpkg *types.Package) *Package {
 	}
 }
 
-// parseFiles parses a package's files. full: a repo package to walk, whole,
-// with comments, as the walk reads them; otherwise without comments or object
-// resolution, for its declarations. Stdlib files are named $GOROOT/src/..., as
-// compiler export data names them, so positions in the Go distribution don't
-// depend on where it's installed.
+// parseFiles parses a package's files: in full, with comments, for a repo
+// package to walk; otherwise declarations only. Stdlib files are named
+// $GOROOT/src/..., as export data names them, so positions don't depend on
+// where Go is installed.
 func (ld *loader) parseFiles(lp *listed, srcs []source, full bool, report func(error)) []*ast.File {
 	mode := parser.SkipObjectResolution
 	if full {
@@ -421,9 +413,9 @@ func (ld *loader) parseFiles(lp *listed, srcs []source, full bool, report func(e
 	return files
 }
 
-// typeCheck checks a package's parsed files. full: a repo package to walk,
-// with function bodies and type information; otherwise its declarations
-// only, all its dependents need, and info is nil.
+// typeCheck checks a package's files: in full, with bodies and type
+// information, for a repo package to walk; otherwise declarations only,
+// and info is nil.
 func (ld *loader) typeCheck(lp *listed, files []*ast.File, full bool, report func(error)) (*types.Package, *types.Info) {
 	var info *types.Info
 	if full {

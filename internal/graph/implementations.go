@@ -11,12 +11,9 @@ import (
 	"strings"
 )
 
-// typeSummary is one package's types by method set. Maps go from method key
-// (unexported names qualified by package) to signature key; equal keys mean
-// identical methods. No generic types, empty interfaces or constraints.
-// Interfaces are those the package declares, and those it calls methods
-// through, which may be from outside the repo: several packages can list the
-// same one.
+// typeSummary is one package's types by method set, as method key →
+// signature key: equal keys mean identical methods. Interfaces are those the
+// package declares or calls through, so several packages can list one.
 type typeSummary struct {
 	Concrete   []concreteSummary `json:"concrete"`
 	Interfaces []ifaceSummary    `json:"interfaces"`
@@ -33,9 +30,8 @@ type ifaceSummary struct {
 	Methods map[string]string `json:"methods"` // embedded ones included
 }
 
-// summarize adds tn to the package's summary. Generic types can't be checked
-// without type args; every type implements an empty interface; interfaces
-// with type terms only constrain type params.
+// summarize adds tn to the package's summary, unless it's generic: those
+// can't be checked without type args.
 func (b *callGraphBuilder) summarize(tn *types.TypeName) {
 	if isGeneric(tn) {
 		return
@@ -52,8 +48,8 @@ func (b *callGraphBuilder) summarize(tn *types.TypeName) {
 	})
 }
 
-// summarizeInterface adds an interface to the package's summary, once: a
-// package can both declare an interface and call through it.
+// summarizeInterface adds an interface to the summary once, since a package
+// can declare it and call through it. Empty ones and constraints are skipped.
 func (b *callGraphBuilder) summarizeInterface(tn *types.TypeName, iface *types.Interface) {
 	if isGeneric(tn) || iface.NumMethods() == 0 || !iface.IsMethodSet() {
 		return
@@ -157,9 +153,9 @@ func (b *callGraphBuilder) tupleKeys(tuple *types.Tuple) []string {
 	return keys
 }
 
-// matchImplementations finds implementations across all summaries, as
-// implementations() does from type-checker objects. Each interface is indexed
-// under its first method key: a type without that method can't implement it.
+// matchImplementations matches concrete types against interfaces across all
+// summaries. Each interface is indexed under its first method key: a type
+// without that method can't implement it.
 func matchImplementations(summaries []typeSummary) []Implementation {
 	byMethod := map[string][]ifaceSummary{}
 	seen := map[string]bool{}

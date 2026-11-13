@@ -1,22 +1,13 @@
-// Package load is grepo's only point of contact with the Go toolchain.
+// Package load is grepo's only contact with the Go toolchain. It runs `go
+// list` in the target module, so grepo sees the code as `go build` does, then
+// parses and type-checks it. Later stages read its Result, never go/packages.
 //
-// It runs `go list` inside the target repo, so grepo sees the code exactly as
-// `go build` would: the same go.mod, dependency versions and build tags. Every
-// later stage (the package and call graphs now, data-flow analysis later)
-// consumes the Result from here, never go/packages directly.
+// The target must be a module whose dependencies can be downloaded. Only the
+// current GOOS/GOARCH's files are loaded; tests and nested modules are skipped.
 //
-// What the target repo needs: it must be a Go module whose dependencies can
-// be downloaded. Limitations: only files for the current GOOS/GOARCH are
-// loaded, test files are skipped, and nested modules are not followed.
-//
-// Each package comes back with its parsed syntax trees and type information,
-// which the graph package walks to build the call graph. Or Load hands each
-// repo package to a Walk as soon as its types are ready, and drops its syntax
-// and type information after: a large repo's are too big to hold all at once.
-//
-// Load is grepo's own loader (golist.go). GoPackages loads the same through
-// golang.org/x/tools/go/packages, for vta-diff, which builds SSA from it, and
-// for comparing the two.
+// Load (golist.go) can hand each repo package to a Walk once its types are
+// ready, then drop its syntax: a large repo's is too big to hold at once.
+// GoPackages loads through go/packages instead, for vta-diff's SSA.
 package load
 
 import (
@@ -59,46 +50,40 @@ type Package struct {
 	Types     *types.Package // from the store: checked from source without bodies, what importers need
 	TypesInfo *types.Info    // nil when it came from the store
 
-	// With a store: Key is the package's row, "" if it has none (errors).
-	// Share is the graph share saved there; when set, the package came from
-	// the store and isn't walked.
+	// With a store: Key is the package's row ("" if none, e.g. errors), and
+	// Share the graph share saved there. A package with a Share isn't walked.
 	Key   string
 	Share []byte
 }
 
-// GoPackages' load mode. Its dependencies' types come from compiled export
-// data: slow on a cold build cache, which is why Load doesn't use it.
+// mode is GoPackages' load mode. Dependencies' types come from compiled
+// export data, slow on a cold build cache: why Load doesn't use go/packages.
 const mode = packages.NeedName | packages.NeedFiles | packages.NeedImports | packages.NeedModule |
 	packages.NeedSyntax | packages.NeedTypes | packages.NeedTypesInfo
 
-// Walk reads one repo package: its syntax and type information when it was
-// checked from source, its Share when it came from the store. repo holds
-// every repo package's import path; it's shared, so don't change it. Walks
-// run concurrently, each while its package's dependents are being checked.
+// Walk reads one repo package: its syntax and types, or its Share if it came
+// from the store. repo is every repo package's path, shared: don't change it.
+// Walks run concurrently.
 type Walk func(pkg *Package, repo map[string]bool)
 
-// Load loads every package under dir (the equivalent of `go list ./...`).
-// Packages that fail to load are logged as warnings and still returned, with
-// their Errors field set. With a store, dependencies unchanged since an
-// earlier load come from it instead of being type-checked; nil loads
-// everything from source. With a walk, it runs on each repo package as soon
-// as its types are ready, and Load then drops the package's Syntax,
-// TypesInfo and Share; nil keeps them.
+// Load loads every package under dir, like `go list ./...`. Packages with
+// errors are logged and returned with Errors set. A non-nil st serves what's
+// unchanged since an earlier load. A non-nil walk runs on each repo package
+// once its types are ready; Load then drops its Syntax, TypesInfo and Share.
 func Load(ctx context.Context, dir string, st *store.Store, log *slog.Logger, walk Walk) (*Result, error) {
 	return fromGoList(ctx, dir, st, log, walk)
 }
 
-// GoPackages loads like Load, through go/packages, and also returns its
-// packages. They share syntax and type objects with the Result's, so SSA built
-// from them maps back onto a graph built from the Result (vta-diff).
+// GoPackages loads like Load through go/packages, and also returns those
+// packages. They share objects with the Result's, so SSA built from them
+// maps onto its graph (vta-diff).
 func GoPackages(ctx context.Context, dir string, log *slog.Logger) (*Result, []*packages.Package, error) {
 	abs, err := filepath.Abs(dir)
 	if err != nil {
 		return nil, nil, err
 	}
 
-	// The first load of a repo also downloads its dependencies, which is
-	// usually most of the time spent here.
+	// A repo's first load also downloads its dependencies: most of the time here.
 	start := time.Now()
 	log.Debug("loading packages", "dir", abs)
 	cfg := &packages.Config{Context: ctx, Mode: mode, Dir: abs}

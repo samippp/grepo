@@ -1,13 +1,8 @@
-// Package source turns what the user gives grepo (a GitHub link or a local
-// path) into a directory on disk that the load package can read.
+// Package source turns a GitHub link or local path into a directory to load.
 //
-// It is the first stage of the pipeline and is shared by every front end: the
-// CLI calls it today, and the web app will call it with the link a user pastes.
-//
-// GitHub repos are shallow-cloned (latest commit only) into the user cache
-// directory, e.g. %LocalAppData%\grepo\repos\github.com\owner\repo on Windows.
-// Later runs on the same repo update the existing clone instead of starting
-// over. Requires git on PATH. Only public repos are supported for now.
+// GitHub repos are shallow-cloned into the user cache directory
+// (grepo/repos/github.com/owner/repo) and updated in place on later runs.
+// Needs git on PATH; public repos only.
 package source
 
 import (
@@ -34,9 +29,8 @@ type Repo struct {
 	Commit string `json:"commit,omitempty"` // analyzed commit SHA; empty for local paths
 }
 
-// Resolve returns the repository arg refers to. An existing directory is used
-// as is. Anything else is treated as a GitHub link and cloned, or updated if it
-// is already cached.
+// Resolve returns the repo arg names: an existing directory as is, anything
+// else as a GitHub link, cloned or updated.
 func Resolve(ctx context.Context, arg string, log *slog.Logger) (*Repo, error) {
 	if fi, err := os.Stat(arg); err == nil && fi.IsDir() {
 		log.Debug("using local directory", "dir", arg)
@@ -55,8 +49,7 @@ func Resolve(ctx context.Context, arg string, log *slog.Logger) (*Repo, error) {
 	if err != nil {
 		return nil, err
 	}
-	// GitHub names are case-insensitive, so lowercase the cache path to avoid
-	// keeping two clones of the same repo.
+	// Lowercased: GitHub names are case-insensitive, so one clone per repo.
 	dir := filepath.Join(cache, "grepo", "repos", "github.com", strings.ToLower(owner), strings.ToLower(name))
 	repoURL := "https://github.com/" + owner + "/" + name
 
@@ -72,8 +65,8 @@ func Resolve(ctx context.Context, arg string, log *slog.Logger) (*Repo, error) {
 	return &Repo{Dir: dir, URL: repoURL, Commit: commit}, nil
 }
 
-// Owner and repo names may only contain these characters on GitHub. Checking
-// them also stops input like "../.." from escaping the cache directory.
+// namePart is what GitHub allows in owner and repo names. It also keeps
+// "../.." from escaping the cache directory.
 var namePart = regexp.MustCompile(`^[A-Za-z0-9_.-]+$`)
 
 // ParseGitHubURL extracts owner and repo from links such as
@@ -124,8 +117,7 @@ func syncClone(ctx context.Context, log *slog.Logger, repoURL, dir string) error
 		return err
 	}
 
-	// Clone into a temp dir and rename it into place, so a failed or
-	// interrupted clone never leaves a half-finished repo in the cache.
+	// Clone to a temp dir and rename it, so a failed clone leaves nothing behind.
 	if err := os.MkdirAll(filepath.Dir(dir), 0o755); err != nil {
 		return err
 	}
@@ -148,9 +140,8 @@ func git(ctx context.Context, log *slog.Logger, dir string, args ...string) (str
 	log.Debug("running git", "args", args, "dir", dir)
 	cmd := exec.CommandContext(ctx, "git", args...)
 	cmd.Dir = dir
-	// Fail instead of asking for credentials when a repo is private or does
-	// not exist. The second variable stops Git Credential Manager's login popup
-	// on Windows.
+	// Fail rather than prompt for credentials (private or missing repos);
+	// GCM_INTERACTIVE stops Git Credential Manager's popup on Windows.
 	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0", "GCM_INTERACTIVE=never")
 
 	var stdout, stderr bytes.Buffer

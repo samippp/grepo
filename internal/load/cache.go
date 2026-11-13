@@ -1,6 +1,5 @@
-// Cache keys: what a package's cached types depend on (docs/architecture.md,
-// Store). Keys are chained: a package's holds its imports' keys, so a change
-// anywhere below it gives it a new one.
+// Cache keys (docs/architecture.md, Store). A package's key holds its
+// imports' keys, so a change anywhere below it gives it a new one.
 
 package load
 
@@ -47,9 +46,8 @@ type keyInput struct {
 	ImportKeys []string  // in Imports order
 }
 
-// fileKey is one file in a key: its path relative to the repo root (its name
-// alone when the package has an identity), and its content's sha256 ("" when
-// the package has an identity).
+// fileKey is one file in a key. With an identity, Path is the file's name and
+// Hash is empty; otherwise Path is relative to the root and Hash its sha256.
 type fileKey struct {
 	Path string
 	Hash string
@@ -65,10 +63,9 @@ func packageKey(k keyInput) string {
 	return hex.EncodeToString(sum[:])
 }
 
-// fileIdentity is what stands for a package's file contents when they can't
-// change: std@GOVERSION for the stdlib (not for a devel toolchain, whose
-// GOROOT may be edited), module@version for a package in the module cache
-// (the replacement's, when replaced). "" means hash the files: the repo, a
+// fileIdentity stands for a package's files when they can't change:
+// std@GOVERSION (not on a devel toolchain, whose GOROOT may be edited), or
+// module@version in the module cache. "" means hash the files: the repo, a
 // local replace, vendor, a workspace module.
 func fileIdentity(lp *listed, goVersion, modCache string) string {
 	if lp.Standard {
@@ -119,9 +116,8 @@ var grepoVersion = sync.OnceValues(func() (string, error) {
 	return hex.EncodeToString(h.Sum(nil)), nil
 })
 
-// cache is one load's use of the store: it reads dependencies' export data
-// and repo packages' shares, and collects what to write back, saved in one
-// transaction at the end.
+// cache is one load's use of the store: it reads export data and shares, and
+// saves new rows in one transaction at the end.
 type cache struct {
 	ctx    context.Context
 	st     *store.Store
@@ -168,10 +164,8 @@ func (ca *cache) key(lp *listed, identity string, srcs []source, checks map[stri
 			k.Files = append(k.Files, fileKey{Path: name})
 		}
 	} else {
-		// Hashed files are in the repo, or beside it (a local replace,
-		// vendor). The graph shows their positions relative to the root, and
-		// export data keeps them absolute, so the same code elsewhere can't
-		// share the row.
+		// Export data keeps absolute positions, so hashed files' rows are tied
+		// to this root.
 		k.Root = ca.root
 		for _, src := range srcs {
 			path, err := filepath.Rel(ca.root, src.path)
@@ -200,14 +194,9 @@ func (ca *cache) key(lp *listed, identity string, srcs []source, checks map[stri
 	return packageKey(k), readable
 }
 
-// load returns the types cached under key, or nil. deps is the types of
-// every package path imports, directly or not, all done (dependency order):
-// what its export data can reference, so the read shares their objects.
-//
-// A read adds the package it reads to deps, and a new package for each one
-// it references but doesn't find: there are none, as deps holds them all.
-// Each has every object the read can look up, so the read changes no other
-// package, and reads run in parallel.
+// load returns the types cached under key, or nil. deps must hold every
+// package path imports, directly or not, so the read shares their objects
+// and changes no other package: reads run in parallel.
 func (ca *cache) load(key, path string, fset *token.FileSet, deps map[string]*types.Package) *types.Package {
 	export, ok, err := ca.st.Export(ca.ctx, key)
 	if err != nil || !ok {
@@ -238,12 +227,10 @@ func (ca *cache) share(key string) (share []byte, saved bool) {
 	return share, saved
 }
 
-// checked records a package checked from source: a cacheable one is written
-// back unless its row is there already (saved: the key fixes what's in it).
-// A dependency's row holds its export data. A repo package's holds none: its
-// types are checked from source when it comes from the store, and its share
-// is saved into the row after the graph. It reports whether the package has
-// a row after the load.
+// checked queues a row for a package checked from source, if it's cacheable
+// and not saved already. A dependency's row holds its export data; a repo
+// package's gets its share once the graph is built. It reports whether the
+// package has a row.
 func (ca *cache) checked(key string, tpkg *types.Package, fset *token.FileSet, repo, cacheable, saved bool) bool {
 	if !cacheable || saved {
 		return cacheable
@@ -269,14 +256,10 @@ func (ca *cache) save() error {
 	return ca.st.Save(ca.ctx, ca.rows, ca.used)
 }
 
-// borrowsMethods reports whether tpkg declares an interface type defined
-// from another named interface (type List metav1.ListInterface): checked
-// from source, its methods are the other interface's. Export data copies
-// the interface, so read back they'd be new methods of tpkg's type, and the
-// graph would name interface calls through it differently. Such a dependency
-// isn't cached; a package that only mentions its types is, since reading
-// export data keeps the types already in the map. Repo packages' rows hold
-// no export data, so it doesn't apply to them.
+// borrowsMethods reports whether tpkg declares an interface defined from
+// another named one (type List metav1.ListInterface). From source its
+// methods are the other's; export data copies them as tpkg's own, which
+// would rename interface calls through it, so its export data isn't cached.
 func borrowsMethods(tpkg *types.Package) bool {
 	scope := tpkg.Scope()
 	for _, name := range scope.Names() {
