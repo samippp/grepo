@@ -1,12 +1,11 @@
-// Package store is grepo's on-disk cache: one shared SQLite database, one row
-// per package key (see load's packageKey). A row holds what a later run needs
-// so it doesn't build the package again: for a dependency its export data, so
-// it isn't type-checked, and for a repo package its graph share, so it isn't
-// walked.
+// Package store is grepo's on-disk cache: one shared SQLite database with a
+// row per package key (load's packageKey). A dependency's row holds its
+// export data, so it isn't type-checked again; a repo package's holds its
+// graph share, so it isn't walked again.
 //
-// Keys say everything a row depends on, so the stdlib's and the module
-// cache's rows are shared by every repo using the same module cache, and
-// nothing is ever invalidated: a changed package gets a new key.
+// A key covers everything its row depends on, so the stdlib's and the module
+// cache's rows are shared across repos, and nothing is ever invalidated: a
+// changed package gets a new key.
 package store
 
 import (
@@ -22,8 +21,8 @@ import (
 	_ "modernc.org/sqlite" // pure Go: no C compiler, like the loader
 )
 
-// schemaVersion is bumped when the table changes. It's a cache, so an old
-// table is dropped rather than migrated.
+// schemaVersion is bumped when the table changes; an old table is dropped,
+// not migrated.
 const schemaVersion = 2
 
 const schema = `CREATE TABLE IF NOT EXISTS packages (
@@ -131,9 +130,8 @@ func (s *Store) Share(ctx context.Context, key string) (share []byte, saved bool
 	return share, true, nil
 }
 
-// SaveShares saves graph shares by key, in one transaction; a nil share
-// removes the saved one. Only rows already saved get one: a package's row is
-// written at the end of its load, when its key is known to be cacheable.
+// SaveShares sets the graph share of each key's row, in one transaction; a
+// nil share clears it. Keys without a row are skipped: the load writes rows.
 func (s *Store) SaveShares(ctx context.Context, shares map[string][]byte) error {
 	if len(shares) == 0 {
 		return nil
@@ -156,9 +154,8 @@ func (s *Store) SaveShares(ctx context.Context, shares map[string][]byte) error 
 	return tx.Commit()
 }
 
-// Save writes rows, replacing any under the same key (a row without a share
-// keeps the saved one: the key fixes what it's a share of), and marks the
-// keys in used as used now, in one transaction.
+// Save upserts rows and marks the used keys as used now, in one
+// transaction. A row without a share keeps the saved one.
 func (s *Store) Save(ctx context.Context, rows []Row, used []string) error {
 	if len(rows) == 0 && len(used) == 0 {
 		return nil

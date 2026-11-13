@@ -65,11 +65,9 @@ type Variable struct {
 	Pos      string `json:"pos"`
 }
 
-// Implementation records that a concrete type satisfies an interface. The
-// type is a repo type. The interface is declared in the repo, or the repo
-// calls methods through it (io.Writer, error), and then it has no node, like
-// a callee outside the repo. Read it in either direction: what Store
-// implements, or what implements Getter.
+// Implementation says a repo type satisfies an interface: one declared in
+// the repo, or one outside it that the repo calls through (io.Writer), which
+// has no node.
 type Implementation struct {
 	Type        string `json:"type"`                  // concrete type ID
 	Interface   string `json:"interface"`             // interface type ID
@@ -161,12 +159,10 @@ func (g *CallGraph) TypeID(tn *types.TypeName) string { return g.ids.typeID(tn) 
 //   - external calls kept; interface calls point at the interface method
 //   - dynamic calls have no Callee; one edge per call site; output sorted
 //
-// It needs every package's syntax, or its share from the store, and keeps
-// closure IDs for ClosureID. A package from the store (Share set) isn't
-// walked: its share is decoded, and FuncID, TypeID and ClosureID don't know
-// its local types or closures. shares holds the packages walked that have a
-// row (Key set), encoded for the store; without a store there are none. err
-// is a share that can't be decoded. Building with a CallGraphBuilder during
+// res must still hold each package's syntax or store share. FuncID, TypeID
+// and ClosureID don't know local types or closures of packages from the
+// store. shares is the walked packages that have a store row, encoded for
+// it; err is a share that can't be decoded. A CallGraphBuilder used during
 // the load holds less.
 func BuildCallGraph(res *load.Result) (g *CallGraph, shares map[string][]byte, err error) {
 	repo := map[string]bool{}
@@ -182,9 +178,8 @@ func BuildCallGraph(res *load.Result) (g *CallGraph, shares map[string][]byte, e
 }
 
 // CallGraphBuilder builds the call graph one package at a time. Add is a
-// load.Walk: each package is walked as soon as it's checked, or its share
-// decoded when it came from the store, and nothing of its syntax is kept, so
-// the loader can drop it. The graph has no closure IDs (ClosureID returns "").
+// load.Walk that keeps none of a package's syntax, so the loader can drop
+// it; the graph has no closure IDs.
 type CallGraphBuilder struct {
 	root         string // absolute: the Result's Dir
 	keepClosures bool   // BuildCallGraph: closure IDs, keyed by syntax
@@ -317,10 +312,9 @@ func decodeShare(data []byte) (*share, error) {
 	return s, nil
 }
 
-// buildPackage walks one package. Its output depends only on pkg, the repo
-// root and which of pkg and its imports are repo packages (repoImports), so
-// packages can be built in any order, and a package's cache key needs only
-// its own imports' keys.
+// buildPackage walks one package. With repo limited to repoImports, its
+// output depends only on pkg and its imports: packages build in any order,
+// and a cache key needs only its imports' keys.
 func buildPackage(pkg *load.Package, root string, repo map[string]bool) *callGraphBuilder {
 	b := &callGraphBuilder{
 		root:       root,
@@ -349,9 +343,8 @@ func buildPackage(pkg *load.Package, root string, repo map[string]bool) *callGra
 	return b
 }
 
-// sort puts every list in a stable order, whatever order packages were built in.
-// Calls and accesses can tie (one line, one caller, one callee or target):
-// those come from one package's walk, and keep its order.
+// sort orders every list, whatever order packages were built in. Calls and
+// accesses that tie come from one walk and keep its order.
 func (g *CallGraph) sort() {
 	slices.SortFunc(g.Types, func(x, y Type) int {
 		return cmp.Compare(x.ID, y.ID)
@@ -382,9 +375,8 @@ func (g *CallGraph) sort() {
 	})
 }
 
-// repoImports is the part of the repo's package paths pkg's walk can see:
-// pkg itself and its imports that are repo packages. A const can only be
-// read where it's named, so it's declared in pkg or in a package pkg imports.
+// repoImports is pkg and its imports that are repo packages: the only
+// packages whose consts pkg can name.
 func repoImports(pkg *load.Package, repo map[string]bool) map[string]bool {
 	seen := map[string]bool{pkg.PkgPath: true}
 	for _, imp := range pkg.Imports {

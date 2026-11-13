@@ -11,10 +11,9 @@ import (
 // the walk assigns. Every other ID is computed from the object alone.
 type idTable map[*types.TypeName]string
 
-// funcID is the ID of a function or method. Plain functions use FullName.
-// Methods use "(T).name" or "(*T).name", where T is the declaring type's
-// typeID: no constraints, the declaration's param names, aliases resolved.
-// Generic instances map to their declaration.
+// funcID is FullName for a function, and "(T).name" or "(*T).name" for a
+// method, T being the declaring type's typeID. Generic instances map to
+// their declaration.
 func (ids idTable) funcID(fn *types.Func) string {
 	fn = fn.Origin()
 	named, pointer := receiver(fn)
@@ -52,9 +51,8 @@ func receiver(fn *types.Func) (named *types.Named, pointer bool) {
 	return named, pointer
 }
 
-// typeID is "pkg.Name", with type param names for generics: "pkg.List[T]".
-// (types.TypeString would give "pkg.List[T any]", which method IDs don't use.)
-// Local types use the ID the walk assigned: "parent.name#n".
+// typeID is "pkg.Name", "pkg.List[T]" for generics (not TypeString's
+// "List[T any]"), or the walk's "parent.name#n" for local types.
 func (ids idTable) typeID(tn *types.TypeName) string {
 	if tn.Pkg() == nil {
 		return tn.Name() // built-in, e.g. error

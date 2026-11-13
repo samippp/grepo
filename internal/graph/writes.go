@@ -72,16 +72,15 @@ func (b *callGraphBuilder) addConstruct(accessor string, lit *ast.CompositeLit) 
 	owner := b.ids.typeID(named.Origin().Obj()) // List[int]{...} → List[T]
 	for i, elt := range lit.Elts {
 		var field *types.Var
+		value := elt
 		if kv, ok := elt.(*ast.KeyValueExpr); ok {
-			field, _ = b.pkg.TypesInfo.Uses[kv.Key.(*ast.Ident)].(*types.Var)
+			key, _ := kv.Key.(*ast.Ident) // not a name only with type errors
+			field, _ = b.pkg.TypesInfo.Uses[key].(*types.Var)
+			value = kv.Value
 		} else if i < st.NumFields() {
 			field = st.Field(i) // positional
 		}
 		if field != nil {
-			value := elt
-			if kv, ok := elt.(*ast.KeyValueExpr); ok {
-				value = kv.Value
-			}
 			b.accesses = append(b.accesses, Access{Accessor: accessor, Target: FieldID(owner, field.Name()), Pos: b.pos(elt.Pos()), Kind: ConstructAccess, Func: b.funcValue(value)})
 		}
 	}
@@ -160,9 +159,11 @@ func (b *callGraphBuilder) addWrite(accessor string, e ast.Expr, kind AccessKind
 // delete(e, k). An array's elements are its own memory, so that's a write
 // to e itself; a slice, map or pointer's are shared, so only e is recorded.
 func (b *callGraphBuilder) addContentWrite(accessor string, e ast.Expr, pos token.Pos) {
-	if _, ok := b.pkg.TypesInfo.TypeOf(e).Underlying().(*types.Array); ok {
-		b.addWrite(accessor, e, ContentAccess, "")
-		return
+	if typ := b.pkg.TypesInfo.TypeOf(e); typ != nil { // nil for an undefined name
+		if _, ok := typ.Underlying().(*types.Array); ok {
+			b.addWrite(accessor, e, ContentAccess, "")
+			return
+		}
 	}
 	b.addHolderContent(accessor, e, pos)
 }

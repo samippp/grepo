@@ -1,8 +1,5 @@
-// callers.go implements `grepo callers <function> [path | github-link]`.
-//
-// Flow: loadRepoGraph (the module, from source) → query.Index.Func (the name
-// to one function, or the candidates if it's ambiguous) → Index.Callers →
-// one line per site, or --json.
+// callers.go implements `grepo callers`: loadRepoGraph → Index.Func →
+// Index.Callers → one line per site, or --json.
 
 package cli
 
@@ -100,8 +97,7 @@ Exit codes, as grep's: 0 sites found, 1 none, 2 error.`,
 	return cmd
 }
 
-// printCallers prints one site per line: path:line: from: source line, then
-// how it reaches the function unless it calls it directly.
+// printCallers prints one site per line: path:line: from: source line  [how].
 func printCallers(w io.Writer, p *printer, sites []query.Site) error {
 	ix := p.rg.ix
 	for _, s := range sites {

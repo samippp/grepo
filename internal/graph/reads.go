@@ -136,11 +136,11 @@ func (b *callGraphBuilder) addReads(accessor string, steps []fieldStep, pos stri
 // handed walks e, a value that is passed, stored, returned or sent. If e is
 // itself a slice or map field or var, its contents escape too.
 func (b *callGraphBuilder) handed(accessor string, e ast.Expr) {
-	if b.suppressed[e] {
-		b.expr(accessor, e)
+	suppressed := b.suppressed[e] // expr clears it
+	b.expr(accessor, e)
+	if suppressed {
 		return
 	}
-	b.expr(accessor, e)
 	if target := b.targetID(e); target != "" && sharesContents(b.pkg.TypesInfo.TypeOf(e)) {
 		b.accesses = append(b.accesses, Access{Accessor: accessor, Target: target, Pos: b.pos(e.Pos()), Kind: EscapeAccess})
 	}
@@ -157,13 +157,6 @@ func sharesContents(typ types.Type) bool {
 		return true
 	}
 	return false
-}
-
-// passesArgs reports whether call hands its args to a function: not a
-// builtin or a conversion.
-func (b *callGraphBuilder) passesArgs(call *ast.CallExpr) bool {
-	tv := b.pkg.TypesInfo.Types[call.Fun]
-	return !tv.IsType() && !tv.IsBuiltin()
 }
 
 // through is the field or package var a call with this fun is made on

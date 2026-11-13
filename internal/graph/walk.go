@@ -96,9 +96,9 @@ func (b *callGraphBuilder) expr(id string, e ast.Expr) {
 		if written {
 			args = args[1:]
 		}
-		passes := b.passesArgs(e)
+		isCall := b.isCall(e)
 		for _, arg := range args {
-			if passes {
+			if isCall {
 				b.handed(id, arg)
 			} else {
 				b.expr(id, arg)

@@ -27,10 +27,10 @@ func (b *callGraphBuilder) addCall(callerID string, call *ast.CallExpr) {
 // callee returns the ID of the function call refers to and the call's kind:
 // "" and dynamic if unknown. isCall is false for conversions and built-ins.
 func (b *callGraphBuilder) callee(call *ast.CallExpr) (id string, kind CallKind, isCall bool) {
-	info := b.pkg.TypesInfo
-	if tv := info.Types[call.Fun]; tv.IsType() || tv.IsBuiltin() {
+	if !b.isCall(call) {
 		return "", "", false // int64(n), len(x)
 	}
+	info := b.pkg.TypesInfo
 
 	var name *ast.Ident
 	switch fun := unindex(ast.Unparen(call.Fun)).(type) {
@@ -54,11 +54,9 @@ func (b *callGraphBuilder) callee(call *ast.CallExpr) (id string, kind CallKind,
 	return b.ids.funcID(fn), kind, true // funcID: List[int].Push → List[T].Push
 }
 
-// calledThrough adds the interface an interface call's method is declared on
-// to the package's summary, so types implementing it are matched even when
-// it's from outside the repo (io.Writer, error): that's the interface the
-// call names, embedded or not. Interfaces without a name (literals) have no
-// ID to match.
+// calledThrough adds the interface fn is declared on to the package's
+// summary, so its implementations are matched even when it's outside the
+// repo (io.Writer). Unnamed interfaces have no ID to match.
 func (b *callGraphBuilder) calledThrough(fn *types.Func) {
 	named, _ := receiver(fn.Origin())
 	if named == nil {
@@ -78,6 +76,12 @@ func unindex(e ast.Expr) ast.Expr {
 		return x.X
 	}
 	return e
+}
+
+// isCall reports whether call calls a function: not a conversion or a built-in.
+func (b *callGraphBuilder) isCall(call *ast.CallExpr) bool {
+	tv := b.pkg.TypesInfo.Types[call.Fun]
+	return !tv.IsType() && !tv.IsBuiltin()
 }
 
 // callKind classifies a call by its callee.

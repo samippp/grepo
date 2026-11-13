@@ -1,17 +1,10 @@
-// Package graph turns loaded packages into the graphs grepo displays.
-//
-// Every function here is a pure transformation: no disk access, no go
-// toolchain, and sorted, deterministic output. That keeps the code easy to test
-// and keeps the JSON stable across runs, which the LLM cache (M6) relies on.
-// For the same reason nothing here logs; callers time and log these builders.
-//
-// Builders:
-//   - BuildPackageGraph (this file, M0): which packages import which.
-//   - BuildCallGraph (callgraph.go, M1): types, variables, functions, calls,
+// Package graph turns loaded packages into grepo's graphs:
+//   - BuildPackageGraph: which packages import which.
+//   - BuildCallGraph (callgraph.go): types, variables, functions, calls,
 //     accesses and implementations.
 //
-// Planned:
-//   - M7: flows traced from entry points.
+// It's pure: no disk, no toolchain, no logging, and sorted output, so the
+// JSON is stable across runs.
 package graph
 
 import (
@@ -54,8 +47,7 @@ type Edge struct {
 	To   string `json:"to"`
 }
 
-// BuildPackageGraph turns loaded packages into a PackageGraph. Output is sorted
-// so repeated runs produce identical JSON.
+// BuildPackageGraph builds res's import graph.
 func BuildPackageGraph(res *load.Result) *PackageGraph {
 	internal := make(map[string]bool, len(res.Packages))
 	for _, p := range res.Packages {

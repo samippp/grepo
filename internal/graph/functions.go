@@ -140,7 +140,8 @@ func (b *callGraphBuilder) numberValueClosures(spec *ast.ValueSpec) {
 		if len(spec.Values) == len(spec.Names) {
 			name = spec.Names[i]
 		}
-		prefix, parent := b.pkg.PkgPath+"."+name.Name, b.pkg.PkgPath+"."+name.Name
+		prefix := b.pkg.PkgPath + "." + name.Name
+		parent := prefix
 		if name.Name == "_" {
 			parent = b.pkg.PkgPath
 		}
