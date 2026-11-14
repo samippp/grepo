@@ -33,9 +33,11 @@ CallGraph
 ├── Types           []Type             nodes
 ├── Variables       []Variable         nodes
 ├── Functions       []Function         nodes (incl. methods and interface methods)
+├── External        []Function         nodes outside the repo that calls and func values name
 ├── Calls           []FunctionCall     edges: caller → callee
 ├── Accesses        []Access           edges: function → var / field it writes, reads or escapes
-└── Implementations []Implementation   edges: type → interface
+├── Implementations []Implementation   edges: type → interface
+└── Dependencies    []Dependency       packages outside the repo that IDs name, with their names
 (+ PackageGraph: package nodes and import edges)
 ```
 
@@ -64,6 +66,10 @@ Parent → closures only: the enclosing function or closure, or the package var 
 ```
 
 Interface methods are `Function` nodes with no `Receiver`, `Owner` set to the interface, and no calls. Closures have no `Receiver` or `Owner`, even inside methods, and are never exported.
+
+`External` holds a `Function` node, without `Pos`, for each function outside the repo that a call or a func value names: `fmt.Println`, `(*sync.Mutex).Lock`, `(io.Writer).Write` (owned by `io.Writer`), `(error).Error` (no package). The walk has each one's `types.Func`, so consumers needn't parse IDs. A package records every function outside itself that it names, since it can call methods of repo packages it doesn't import; the merge drops the repo's, which have their own nodes.
+
+**`Dependency`**: each package outside the repo that an ID names (a function, a field or a var of it), with the name its code declares, which its path's last element isn't always: on caddy, `github.com/dustin/go-humanize` is `humanize` and `github.com/quic-go/quic-go` is `quic`. The walk notes them as it makes the IDs, so they're the same however dependencies were loaded: one read from export data imports only the packages its API names, so following imports would reach fewer.
 
 **`Variable`**: package-level `var` and `const`.
 
@@ -101,7 +107,7 @@ Func      assign / construct: the function the written value is, like Arg.Func
           (cobra.Command{RunE: func…}, s.onErr = h); "" otherwise
 ```
 
-**`Implementation`**: a concrete repo type satisfies an interface: one declared in the repo, or one from outside it that the repo calls methods through (`io.Writer`, `error`), which has no node, like a callee outside the repo.
+**`Implementation`**: a concrete repo type satisfies an interface: one declared in the repo, or one from outside it that the repo calls methods through (`io.Writer`, `error`), which has no `Type` node; the methods called through it are `External` nodes.
 
 ```
 Type, Interface   type IDs
@@ -123,7 +129,7 @@ PointerOnly       only *Type implements it
    (function)   Package  (PackageGraph node)
 ```
 
-Every reference is an ID string, and every ID resolves to a node. Exceptions by design: a dynamic call's empty callee, and callees and implemented interfaces outside the repo (e.g. `fmt.Println`, `io.Writer`), which are kept but have no node.
+Every reference is an ID string, and every ID resolves to a node, outside callees to `External` ones. Exceptions by design: a dynamic call's empty callee, and types, vars and fields outside the repo (e.g. `io.Writer`, `os.Args`, `cobra.Command.RunE`), which are kept but have no node; their packages are in `Dependencies`.
 
 Example: what can `lookup` reach through `g.Get(1)`?
 
@@ -218,7 +224,7 @@ CallGraphBuilder.Add (a load.Walk: each repo package during the load; BuildCallG
 - Record facts (`Implementation`) instead of "might call" edges, which would be noisy (caddy's `Module` has 137 implementations).
 - `PointerOnly` distinguishes `*T` from `T`.
 - Repo concrete types. Interfaces declared in the repo, and those from outside it that the repo calls through (`w.Write` on an `io.Writer`, `err.Error()`): the interface the call names, the embedded one when the method comes from an embedded interface. That's the set `callers` needs, since a call through an interface nothing calls through doesn't exist. Not yet (the rest of #14): outside interfaces only outside code calls through (`Handler` implements `http.Handler`, but only `net/http` calls `ServeHTTP` through it). Generic, unnamed and empty interfaces are skipped.
-- Checked with `vta-diff` on caddy, which now takes the interface from the callee's ID when it has no node: interface targets confirmed 4,258 → 5,859, outside the repo 1,812 → 211, of which 203 have a target type outside the repo (`*testing.T` behind `testing.TB`) and 8 go through unnamed interfaces; none missing an implementation.
+- Checked with `vta-diff` on caddy, which takes the interface from the callee's node (`External` outside the repo): interface targets confirmed 4,258 → 5,859, outside the repo 1,812 → 211, of which 203 have a target type outside the repo (`*testing.T` behind `testing.TB`) and 8 go through unnamed interfaces; none missing an implementation.
 - Matched after every package is built, from each package's stored method sets (see Implementations from summaries), so a cached package takes part without type-checking.
 - A first-method-key index picks candidates; the method sets decide.
 
@@ -370,7 +376,7 @@ CallGraphBuilder.Add (a load.Walk: each repo package during the load; BuildCallG
 - Commands answer one question each, grep-style: one result per line on stdout as `path:line: ...`, clickable in editors and terminals and usable as a quickfix list; logs on stderr, Info only with `-v`; `--json` for scripts and agents, one object per run with IDs in full and positions as printed. Exit codes as grep's: 0 found, 1 nothing found, 2 an error (an ambiguous name too).
 - `internal/query` indexes the graph (`graph.PackageGraph`, `graph.CallGraph`) and answers from it, reading nothing else, so it works however the graph was built. Commands in `internal/cli` load, ask and print. `--json` is a contract with agents; the store's encoding stays internal.
 - Paths are relative to the current directory for a local repo, so they're clickable where the command ran; a clone's are the repo's own. Source lines are read from the files when printed, not stored.
-- Names: an ID, or the name qualified as much as needed: `Get`, `Store.Get`, `(*Store).Get`, `store.Store.Get`, a path suffix (`caddyhttp/reverseproxy.Handler.ServeHTTP`); type args are ignored. The package in the directory asked about wins a tie (on caddy, 40 of 2,003 names are ambiguous; `Handler.ServeHTTP` matches 6 types). Otherwise the candidates are listed on stderr as `path:line: name`, each name one that picks it (the ID when two packages share a name), and the command exits with 2. Functions outside the repo are named from the IDs of calls to them (`os.Exit`, `informers.NewSharedInformerFactory`; their package name guessed from the path), and a repo function of the same name wins over them. Closures and methods of local types are found by ID only.
+- Names: an ID, or the name qualified as much as needed: `Get`, `Store.Get`, `(*Store).Get`, `store.Store.Get`, a path suffix (`caddyhttp/reverseproxy.Handler.ServeHTTP`); type args are ignored. The package in the directory asked about wins a tie (on caddy, 40 of 2,003 names are ambiguous; `Handler.ServeHTTP` matches 6 types). Otherwise the candidates are listed on stderr as `path:line: name`, each name one that picks it (the ID when two packages share a name), and the command exits with 2. Functions outside the repo are their `External` nodes, qualified by their packages' declared names from `Dependencies` (`os.Exit`, `humanize.Bytes` for `github.com/dustin/go-humanize`), and a repo function of the same name wins over them. Closures and methods of local types are found by ID only.
 - `callers <function>`: the sites that can reach it, in three groups, each by position (lines as numbers):
   - direct: calls it, by name or through the interface method it is;
   - interface, `[via I]`: calls a method of an interface its type implements (Implementations, outside interfaces included), so it may run there;

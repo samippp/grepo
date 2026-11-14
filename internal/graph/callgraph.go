@@ -138,13 +138,23 @@ type CallGraph struct {
 	Types     []Type         `json:"types"`
 	Variables []Variable     `json:"variables"`
 	Functions []Function     `json:"functions"`
+	External  []Function     `json:"external"` // outside the repo, named by calls and func values: no Pos
 	Calls     []FunctionCall `json:"calls"`
 	Accesses  []Access       `json:"accesses"`
 
 	Implementations []Implementation `json:"implementations"`
 
+	Dependencies []Dependency `json:"dependencies"` // packages outside the repo that IDs here name
+
 	ids      idTable                 // local type IDs, for FuncID / TypeID
 	closures map[*ast.FuncLit]string // closure IDs, for ClosureID
+}
+
+// Dependency is a package outside the repo, with the name its code declares,
+// which its path doesn't always give: github.com/dustin/go-humanize is humanize.
+type Dependency struct {
+	Path string `json:"path"`
+	Name string `json:"name"`
 }
 
 // FuncID is grepo's ID for fn, including methods of this graph's local types.
@@ -248,15 +258,19 @@ func (cb *CallGraphBuilder) CallGraph() (g *CallGraph, shares map[string][]byte,
 		return nil, nil, cb.err
 	}
 	g = &CallGraph{
-		Types:     []Type{},
-		Variables: []Variable{},
-		Functions: []Function{},
-		Calls:     []FunctionCall{},
-		Accesses:  []Access{},
-		ids:       maps.Clone(cb.ids),
-		closures:  maps.Clone(cb.closures),
+		Types:        []Type{},
+		Variables:    []Variable{},
+		Functions:    []Function{},
+		External:     []Function{},
+		Calls:        []FunctionCall{},
+		Accesses:     []Access{},
+		Dependencies: []Dependency{},
+		ids:          maps.Clone(cb.ids),
+		closures:     maps.Clone(cb.closures),
 	}
 	var summaries []typeSummary
+	external := map[string]Function{} // several packages can name one
+	deps := map[string]string{}
 	for _, path := range slices.Sorted(maps.Keys(cb.shares)) {
 		s := cb.shares[path]
 		g.Types = append(g.Types, s.Types...)
@@ -265,6 +279,20 @@ func (cb *CallGraphBuilder) CallGraph() (g *CallGraph, shares map[string][]byte,
 		g.Calls = append(g.Calls, s.Calls...)
 		g.Accesses = append(g.Accesses, s.Accesses...)
 		summaries = append(summaries, s.Summary)
+		for _, f := range s.External {
+			if cb.shares[f.Package] == nil { // a repo function has its own node
+				external[f.ID] = f
+			}
+		}
+		for path, name := range s.Dependencies {
+			if cb.shares[path] == nil {
+				deps[path] = name
+			}
+		}
+	}
+	g.External = slices.AppendSeq(g.External, maps.Values(external))
+	for _, path := range slices.Sorted(maps.Keys(deps)) {
+		g.Dependencies = append(g.Dependencies, Dependency{Path: path, Name: deps[path]})
 	}
 	// After the merge: a type and an interface it implements can be in different packages.
 	g.Implementations = matchImplementations(summaries)
@@ -278,9 +306,12 @@ type share struct {
 	Types     []Type         `json:"types"`
 	Variables []Variable     `json:"variables"`
 	Functions []Function     `json:"functions"`
+	External  []Function     `json:"external"`
 	Calls     []FunctionCall `json:"calls"`
 	Accesses  []Access       `json:"accesses"`
 	Summary   typeSummary    `json:"summary"`
+
+	Dependencies map[string]string `json:"dependencies"` // path → name, repo packages too
 }
 
 func (b *callGraphBuilder) share() *share {
@@ -288,9 +319,12 @@ func (b *callGraphBuilder) share() *share {
 		Types:     b.types,
 		Variables: b.variables,
 		Functions: b.functions,
+		External:  slices.SortedFunc(maps.Values(b.external), byID),
 		Calls:     b.calls,
 		Accesses:  b.accesses,
 		Summary:   b.summary,
+
+		Dependencies: b.deps,
 	}
 }
 
@@ -325,6 +359,8 @@ func buildPackage(pkg *load.Package, root string, repo map[string]bool) *callGra
 		repo:       repo,
 		suppressed: map[ast.Expr]bool{},
 		stmt:       map[*ast.CallExpr]string{},
+		external:   map[string]Function{},
+		deps:       map[string]string{},
 
 		closures:      map[*ast.FuncLit]string{},
 		closureParent: map[*ast.FuncLit]string{},
@@ -352,9 +388,8 @@ func (g *CallGraph) sort() {
 	slices.SortFunc(g.Variables, func(x, y Variable) int {
 		return cmp.Compare(x.ID, y.ID)
 	})
-	slices.SortFunc(g.Functions, func(x, y Function) int {
-		return cmp.Compare(x.ID, y.ID)
-	})
+	slices.SortFunc(g.Functions, byID)
+	slices.SortFunc(g.External, byID)
 	slices.SortFunc(g.Implementations, func(x, y Implementation) int {
 		return cmp.Or(cmp.Compare(x.Type, y.Type), cmp.Compare(x.Interface, y.Interface))
 	})
@@ -374,6 +409,8 @@ func (g *CallGraph) sort() {
 		)
 	})
 }
+
+func byID(x, y Function) int { return cmp.Compare(x.ID, y.ID) }
 
 // repoImports is pkg and its imports that are repo packages: the only
 // packages whose consts pkg can name.
@@ -398,6 +435,8 @@ type callGraphBuilder struct {
 	repo       map[string]bool          // pkg and its repo imports (repoImports): their consts are read
 	suppressed map[ast.Expr]bool        // update right sides walk won't read: x = x + 1
 	stmt       map[*ast.CallExpr]string // "go" / "defer" for those statements' calls
+	external   map[string]Function      // by ID: functions outside pkg that it names (funcRef)
+	deps       map[string]string        // other packages that IDs name, path → name (uses)
 
 	closures      map[*ast.FuncLit]string // closure IDs, from numberClosures
 	closureParent map[*ast.FuncLit]string
