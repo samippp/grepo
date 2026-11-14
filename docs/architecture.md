@@ -20,8 +20,9 @@ GitHub link ──► source ──► load ────────────
 | `internal/load` | Loads packages with `go list` and `go/types`, handing each repo package to a walk once its types are ready (`go/packages` for `vta-diff` and `--loader packages`). |
 | `internal/graph` | Pure transformation: no I/O, no logging, sorted deterministic output. |
 | `internal/query` | Indexes a graph for questions: what a name means, which sites reach a function (Queries). |
+| `internal/store` | The on-disk cache: one SQLite database, a row per package key, holding dependencies' export data and repo packages' graph shares (Store, below). |
 | `internal/logging` | `slog` setup; logs to stderr, results to stdout. |
-| `internal/cli` | `analyze`, `callers`, plus the hidden dev command `vta-diff`. |
+| `internal/cli` | `analyze`, `callers`, plus the hidden dev command `vta-diff`. Every command loads the same way (`module.go`): the whole module holding the path or link given, so a directory inside a module means that module, with positions relative to its root. |
 | `internal/vtadiff` | Compares grepo's call graph with x/tools' VTA and reports differences. |
 
 ## 2. The graph
@@ -382,7 +383,7 @@ CallGraphBuilder.Add (a load.Walk: each repo package during the load; BuildCallG
   - interface, `[via I]`: calls a method of an interface its type implements (Implementations, outside interfaces included), so it may run there;
   - value, `[passed to f]` or `[stored in field]`: passes or stores it as a func value (`Arg.Func`, `Access.Func`), as in `http.HandleFunc("/", h.serve)` or `cobra.Command{RunE: run}`. Calls through func values themselves stay dynamic.
   - `--direct` keeps only the first group. Not followed yet: a promoted method reached through an interface the embedding type implements but its own type doesn't.
-- Each query loads the whole module from source, without the store: a directory inside a module loads that module, since callers can be anywhere in it. caddy 1.5s, Kubernetes ~9s on the WSL machine. The store comes back once the commands settle what it should keep:
+- Each query loads the whole module from source, without the store, like every command (`internal/cli`): callers can be anywhere in it. caddy 1.5s, Kubernetes ~9s on the WSL machine. The store comes back once the commands settle what it should keep:
   - Per-package entries shaped for lookups (names, calls by callee, accesses by target, method sets), so a query reads only the packages that can matter (a function's callers are in its package and its importers), as gopls keeps per-package indexes. Not SQL rows of every call (203k on Kubernetes), which would bring back the cost of writing them.
   - One entry per repo: its packages, their keys, and its files' mtimes and sizes, so a query on an unchanged repo skips `go list`.
   - To check: whether a package's share depends only on its imports' types. Then its key could hold their API instead of their keys, and an edit to a function body would rebuild one package instead of every importer (666 of 3,675 packages after editing Kubernetes' `pkg/features`).

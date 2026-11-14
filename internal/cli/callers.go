@@ -1,4 +1,4 @@
-// callers.go implements `grepo callers`: loadRepoGraph → Index.Func →
+// callers.go implements `grepo callers`: loadModule → Index.Func →
 // Index.Callers → one line per site, or --json.
 
 package cli
@@ -52,10 +52,11 @@ Exit codes, as grep's: 0 sites found, 1 none, 2 error.`,
 			if len(args) == 2 {
 				where = args[1]
 			}
-			rg, err := loadRepoGraph(cmd.Context(), a.log, where)
+			m, err := loadModule(cmd.Context(), a.log, where, loadOptions{})
 			if err != nil {
 				return err
 			}
+			rg := newRepoGraph(m)
 			p := newPrinter(rg)
 
 			fn, err := rg.ix.Func(args[0], rg.prefer)
