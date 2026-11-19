@@ -30,14 +30,17 @@ func (b *callGraphBuilder) handleFuncDecl(funcDecl *ast.FuncDecl) {
 }
 
 // assignFuncDeclID is FuncID(fn), except each init gets "pkg.init@file#n", since a
-// package can have several. Call once per declaration: it counts inits.
+// package can have several, and is recorded in ids. Call once per
+// declaration: it counts inits.
 func (b *callGraphBuilder) assignFuncDeclID(funcDecl *ast.FuncDecl, fn *types.Func) string {
 	if funcDecl.Recv != nil || funcDecl.Name.Name != "init" {
 		return b.ids.funcID(fn)
 	}
 	file := rel(b.root, b.pkg.Fset.Position(funcDecl.Pos()).Filename)
 	b.inits[file]++
-	return fmt.Sprintf("%s@%s#%d", fn.FullName(), file, b.inits[file])
+	id := fmt.Sprintf("%s@%s#%d", fn.FullName(), file, b.inits[file])
+	b.ids[fn] = id
+	return id
 }
 
 // newFunction builds the Function node for fn, a repo function, with the given ID.

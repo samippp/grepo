@@ -2,6 +2,8 @@ package graph
 
 import (
 	"fmt"
+	"go/ast"
+	"go/types"
 	"log/slog"
 	"slices"
 	"strings"
@@ -339,4 +341,54 @@ func formatFunction(f Function) string {
 	}
 	return fmt.Sprintf("%s {name=%s pkg=%s recv=%s params=%v results=%v exported=%v pos=%s owner=%s parent=%s}",
 		f.ID, f.Name, f.Package, recv, f.Params, f.Results, f.Exported, f.Pos, f.Owner, f.Parent)
+}
+
+// TestFuncIDMatchesNodes checks that FuncID names the node the graph has for
+// every declared function, init functions included: there are several per
+// package, and their IDs come from the walk.
+func TestFuncIDMatchesNodes(t *testing.T) {
+	res, g := loadFixture(t), buildFixtureCallGraph(t)
+	byPos := map[string]string{}
+	for _, f := range g.Functions {
+		byPos[f.Pos] = f.ID
+	}
+	inits := 0
+	for _, pkg := range res.Packages {
+		for _, file := range pkg.Syntax {
+			for _, decl := range file.Decls {
+				fd, ok := decl.(*ast.FuncDecl)
+				if !ok {
+					continue
+				}
+				fn := pkg.TypesInfo.Defs[fd.Name].(*types.Func)
+				pos := FormatPos(res.Dir, pkg.Fset.Position(fn.Pos()))
+				if got, want := g.FuncID(fn), byPos[pos]; got != want {
+					t.Errorf("FuncID(%s at %s) = %q, want %q", fn.Name(), pos, got, want)
+				}
+				if fd.Name.Name == "init" && fd.Recv == nil {
+					inits++
+				}
+			}
+		}
+	}
+	if inits != 3 {
+		t.Errorf("checked %d init functions, want the fixture's 3", inits)
+	}
+}
+
+func TestSplitPos(t *testing.T) {
+	for _, tc := range []struct {
+		pos  string
+		file string
+		line int
+	}{
+		{"store/store.go:29", "store/store.go", 29},
+		{"c:/repo/main.go:7", "c:/repo/main.go", 7}, // only the last colon splits
+		{"main.go", "main.go", 0},
+		{"main.go:", "main.go", 0},
+	} {
+		if file, line := SplitPos(tc.pos); file != tc.file || line != tc.line {
+			t.Errorf("SplitPos(%q) = %q, %d; want %q, %d", tc.pos, file, line, tc.file, tc.line)
+		}
+	}
 }

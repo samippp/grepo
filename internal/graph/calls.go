@@ -61,7 +61,7 @@ func (b *callGraphBuilder) callee(call *ast.CallExpr) (id string, kind CallKind,
 // summary, so its implementations are matched even when it's outside the
 // repo (io.Writer). Unnamed interfaces have no ID to match.
 func (b *callGraphBuilder) calledThrough(fn *types.Func) {
-	named, _ := receiver(fn.Origin())
+	named, _ := receiver(fn.Origin().Signature())
 	if named == nil {
 		return
 	}

@@ -7,7 +7,6 @@ import (
 	"cmp"
 	"fmt"
 	"slices"
-	"strconv"
 	"strings"
 
 	"github.com/samippp/grepo/internal/graph"
@@ -278,19 +277,9 @@ func (ix *Index) Callers(fn *graph.Function) []Site {
 
 // comparePos orders "file:line" positions by file, then line as a number.
 func comparePos(a, b string) int {
-	af, al := splitPos(a)
-	bf, bl := splitPos(b)
+	af, al := graph.SplitPos(a)
+	bf, bl := graph.SplitPos(b)
 	return cmp.Or(cmp.Compare(af, bf), cmp.Compare(al, bl))
-}
-
-// splitPos splits "file:line"; line is 0 if it's missing.
-func splitPos(pos string) (file string, line int) {
-	i := strings.LastIndex(pos, ":")
-	if i < 0 {
-		return pos, 0
-	}
-	line, _ = strconv.Atoi(pos[i+1:])
-	return pos[:i], line
 }
 
 // Short is id with each package path cut to the package's name, as Go code

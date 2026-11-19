@@ -72,7 +72,7 @@ func (b *callGraphBuilder) addReceiver(accessor string, x *ast.SelectorExpr, sel
 // takesAddress reports whether calling fn on a value of type recv makes Go
 // take its address: a pointer method on a non-pointer. Interface methods never do.
 func takesAddress(fn *types.Func, recv types.Type) bool {
-	if _, pointer := receiver(fn); !pointer || recv == nil {
+	if _, pointer := receiver(fn.Signature()); !pointer || recv == nil {
 		return false
 	}
 	_, isPointer := recv.Underlying().(*types.Pointer)

@@ -31,7 +31,7 @@ func TestImplementationsFromSummaries(t *testing.T) {
 			if !ok || callKind(fn) != InterfaceCall {
 				continue
 			}
-			named, _ := receiver(fn.Origin())
+			named, _ := receiver(fn.Origin().Signature())
 			if named == nil || isGeneric(named.Obj()) {
 				continue
 			}

@@ -7,16 +7,20 @@ import (
 	"strings"
 )
 
-// idTable holds the IDs of local types (declared inside a function), which
-// the walk assigns. Every other ID is computed from the object alone.
-type idTable map[*types.TypeName]string
+// idTable holds the IDs the walk assigns: local types' (declared inside a
+// function) and init functions'. Every other ID is computed from the object
+// alone.
+type idTable map[types.Object]string
 
 // funcID is FullName for a function, and "(T).name" or "(*T).name" for a
 // method, T being the declaring type's typeID. Generic instances map to
-// their declaration.
+// their declaration. An init function has the ID the walk gave it.
 func (ids idTable) funcID(fn *types.Func) string {
 	fn = fn.Origin()
-	named, pointer := receiver(fn)
+	if id, ok := ids[fn]; ok {
+		return id
+	}
+	named, pointer := receiver(fn.Signature())
 	if named == nil {
 		return fn.FullName()
 	}
@@ -30,16 +34,22 @@ func (ids idTable) funcID(fn *types.Func) string {
 // receiverOwner is the ID of the type a method is declared on, or "" for a
 // plain function. *Store and aliases of Store both give Store's ID.
 func (ids idTable) receiverOwner(fn *types.Func) string {
-	if named, _ := receiver(fn); named != nil {
+	return ids.receiverTypeID(fn.Signature())
+}
+
+// receiverTypeID is the ID of the named type sig's receiver is, or "" if it
+// has none.
+func (ids idTable) receiverTypeID(sig *types.Signature) string {
+	if named, _ := receiver(sig); named != nil {
 		return ids.typeID(named.Obj())
 	}
 	return ""
 }
 
-// receiver is the named type fn is a method of, and whether the receiver is a
+// receiver is the named type sig's receiver is, and whether the receiver is a
 // pointer. It's nil for plain functions (or code with type errors).
-func receiver(fn *types.Func) (named *types.Named, pointer bool) {
-	recv := fn.Signature().Recv()
+func receiver(sig *types.Signature) (named *types.Named, pointer bool) {
+	recv := sig.Recv()
 	if recv == nil {
 		return nil, false
 	}

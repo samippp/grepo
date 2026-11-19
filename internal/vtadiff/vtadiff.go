@@ -15,9 +15,7 @@ import (
 	"go/types"
 	"io"
 	"maps"
-	"path/filepath"
 	"slices"
-	"strconv"
 	"strings"
 
 	"golang.org/x/tools/go/callgraph"
@@ -223,7 +221,6 @@ type translator struct {
 	pkgs       []*packages.Package // the same packages, for SSA
 	cg         *graph.CallGraph    // for its ID functions
 	fset       *token.FileSet
-	initByPos  map[string]string // "file:line" → grepo ID, for init functions
 	owner      map[string]string // grepo function ID → owner type ID
 	repoTypes  map[string]bool
 	implements map[string]bool // "type|interface"
@@ -234,7 +231,6 @@ func newTranslator(res *load.Result, pkgs []*packages.Package, cg *graph.CallGra
 		res:        res,
 		pkgs:       pkgs,
 		cg:         cg,
-		initByPos:  map[string]string{},
 		owner:      map[string]string{},
 		repoTypes:  map[string]bool{},
 		implements: map[string]bool{},
@@ -244,9 +240,6 @@ func newTranslator(res *load.Result, pkgs []*packages.Package, cg *graph.CallGra
 	}
 	for _, f := range cg.Functions {
 		t.owner[f.ID] = f.Owner
-		if f.Name == "init" && f.Receiver == nil && f.Owner == "" {
-			t.initByPos[f.Pos] = f.ID
-		}
 	}
 	for _, f := range cg.External {
 		t.owner[f.ID] = f.Owner
@@ -315,10 +308,11 @@ func (t *translator) callerID(fn *ssa.Function) (string, bool) {
 	if fn.Synthetic == "package initializer" {
 		return fn.Pkg.Pkg.Path(), true
 	}
-	if fn.Synthetic != "" {
+	obj, ok := fn.Object().(*types.Func)
+	if !ok || fn.Synthetic != "" {
 		return "", false
 	}
-	return t.funcID(fn)
+	return t.cg.FuncID(obj), true
 }
 
 // calleeID maps a called function to grepo's callee ID, or gives the reason
@@ -363,7 +357,7 @@ func (t *translator) sitePos(e *callgraph.Edge) string {
 			p = lit.Pos()
 		}
 	}
-	return t.pos(p)
+	return graph.FormatPos(t.res.Dir, t.fset.Position(p))
 }
 
 // closureID is grepo's ID for an SSA closure: SSA keeps the func literal it
@@ -376,50 +370,15 @@ func (t *translator) closureID(fn *ssa.Function) string {
 	return t.cg.ClosureID(lit)
 }
 
-// funcID is grepo's ID for a declared function: the graph's FuncID, except init
-// functions, which grepo numbers per file and are found by position.
-func (t *translator) funcID(fn *ssa.Function) (string, bool) {
-	obj, ok := fn.Object().(*types.Func)
-	if !ok {
-		return "", false
-	}
-	if obj.Name() == "init" && obj.Signature().Recv() == nil {
-		id, ok := t.initByPos[t.pos(fn.Pos())]
-		return id, ok
-	}
-	return t.cg.FuncID(obj), true
-}
-
-// pos formats p as "file:line" relative to the repo root, like grepo does.
-func (t *translator) pos(p token.Pos) string {
-	position := t.fset.Position(p)
-	r, err := filepath.Rel(t.res.Dir, position.Filename)
-	if err != nil {
-		r = position.Filename
-	}
-	return filepath.ToSlash(r) + ":" + strconv.Itoa(position.Line)
-}
-
-// recvTypeID is the type ID of fn's receiver (pointer and aliases removed).
+// recvTypeID is the type ID of fn's receiver. SSA's signature comes first: a
+// wrapper for a promoted method has the outer type's receiver, while its
+// Object is the embedded type's method.
 func (t *translator) recvTypeID(fn *ssa.Function) string {
-	var recv *types.Var
-	if fn.Signature.Recv() != nil {
-		recv = fn.Signature.Recv()
-	} else if obj, ok := fn.Object().(*types.Func); ok {
-		recv = obj.Signature().Recv()
+	sig := fn.Signature
+	if obj, ok := fn.Object().(*types.Func); ok && sig.Recv() == nil {
+		sig = obj.Signature()
 	}
-	if recv == nil {
-		return ""
-	}
-	typ := recv.Type()
-	if p, ok := typ.(*types.Pointer); ok {
-		typ = p.Elem()
-	}
-	named, ok := types.Unalias(typ).(*types.Named)
-	if !ok {
-		return ""
-	}
-	return t.cg.TypeID(named.Origin().Obj())
+	return t.cg.ReceiverTypeID(sig)
 }
 
 func site(caller, pos string) string { return caller + "@" + pos }
@@ -452,21 +411,15 @@ func methodName(id string) string {
 
 // nearby finds an unmatched VTA edge with c's caller and callee within 3 lines.
 func nearby(edges []edge, c graph.FunctionCall) int {
-	file, line := splitPos(c.Pos)
+	file, line := graph.SplitPos(c.Pos)
 	for i, e := range edges {
 		if e.caller != c.Caller || e.callee != c.Callee {
 			continue
 		}
-		f, l := splitPos(e.pos)
+		f, l := graph.SplitPos(e.pos)
 		if f == file && l >= line-3 && l <= line+3 {
 			return i
 		}
 	}
 	return -1
-}
-
-func splitPos(pos string) (string, int) {
-	i := strings.LastIndex(pos, ":")
-	line, _ := strconv.Atoi(pos[i+1:])
-	return pos[:i], line
 }

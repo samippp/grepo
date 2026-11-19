@@ -10,6 +10,7 @@ import (
 	"maps"
 	"slices"
 	"strconv"
+	"strings"
 	"sync"
 
 	"github.com/samippp/grepo/internal/load"
@@ -150,7 +151,7 @@ type CallGraph struct {
 
 	Dependencies []Dependency `json:"dependencies"` // packages outside the repo that IDs here name
 
-	ids      idTable                 // local type IDs, for FuncID / TypeID
+	ids      idTable                 // local type and init IDs, for FuncID / TypeID
 	closures map[*ast.FuncLit]string // closure IDs, for ClosureID
 }
 
@@ -161,11 +162,16 @@ type Dependency struct {
 	Name string `json:"name"`
 }
 
-// FuncID is grepo's ID for fn, including methods of this graph's local types.
+// FuncID is grepo's ID for fn, including init functions and methods of this
+// graph's local types.
 func (g *CallGraph) FuncID(fn *types.Func) string { return g.ids.funcID(fn) }
 
 // TypeID is grepo's ID for tn, including this graph's local types.
 func (g *CallGraph) TypeID(tn *types.TypeName) string { return g.ids.typeID(tn) }
+
+// ReceiverTypeID is the TypeID of the named type sig's receiver is, pointer
+// and aliases removed, or "" if it has none.
+func (g *CallGraph) ReceiverTypeID(sig *types.Signature) string { return g.ids.receiverTypeID(sig) }
 
 // BuildCallGraph records every function and call in res. Rules (see tests):
 //   - IDs from funcID / typeID, types from types.TypeString(t, nil)
@@ -174,8 +180,8 @@ func (g *CallGraph) TypeID(tn *types.TypeName) string { return g.ids.typeID(tn) 
 //   - dynamic calls have no Callee; one edge per call site; output sorted
 //
 // res must still hold each package's syntax or store share. FuncID, TypeID
-// and ClosureID don't know local types or closures of packages from the
-// store. shares is the walked packages that have a store row, encoded for
+// and ClosureID don't know local types, init functions or closures of
+// packages from the store. shares is the walked packages that have a store row, encoded for
 // it; err is a share that can't be decoded. A CallGraphBuilder used during
 // the load holds less.
 func BuildCallGraph(res *load.Result) (g *CallGraph, shares map[string][]byte, err error) {
@@ -196,7 +202,7 @@ type CallGraphBuilder struct {
 
 	mu       sync.Mutex
 	shares   map[string]*share       // by package path
-	ids      idTable                 // walked packages' local type IDs
+	ids      idTable                 // walked packages' local type and init IDs
 	closures map[*ast.FuncLit]string // with keepClosures
 	encoded  map[string][]byte       // walked packages' shares, by row key, for the store
 	err      error                   // the first share that couldn't be decoded
@@ -433,7 +439,7 @@ type callGraphBuilder struct {
 	pkg  *load.Package // current package
 
 	inits      map[string]int           // init funcs seen per file, for unique init IDs
-	ids        idTable                  // local type IDs, filled during the walk
+	ids        idTable                  // local type and init IDs, filled during the walk
 	localCount map[string]int           // local types seen per "parent.name", for unique IDs
 	repo       map[string]bool          // pkg and its repo imports (repoImports): their consts are read
 	suppressed map[ast.Expr]bool        // update right sides walk won't read: x = x + 1
@@ -483,10 +489,25 @@ func tupleParams(tuple *types.Tuple) []Param {
 	return params
 }
 
-// pos formats p as "file:line" relative to the repo root.
+// pos is p as FormatPos writes it.
 func (b *callGraphBuilder) pos(p token.Pos) string {
-	position := b.pkg.Fset.Position(p)
-	return rel(b.root, position.Filename) + ":" + strconv.Itoa(position.Line)
+	return FormatPos(b.root, b.pkg.Fset.Position(p))
+}
+
+// FormatPos is how the graph writes a position: "file:line", the file
+// relative to root with forward slashes. SplitPos reads it back.
+func FormatPos(root string, p token.Position) string {
+	return rel(root, p.Filename) + ":" + strconv.Itoa(p.Line)
+}
+
+// SplitPos splits a position FormatPos wrote; line is 0 if it has none.
+func SplitPos(pos string) (file string, line int) {
+	i := strings.LastIndex(pos, ":")
+	if i < 0 {
+		return pos, 0
+	}
+	line, _ = strconv.Atoi(pos[i+1:])
+	return pos[:i], line
 }
 
 // CountByKind counts calls per kind. The StaticCall share is the resolution rate.

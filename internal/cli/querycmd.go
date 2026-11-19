@@ -9,8 +9,10 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 
+	"github.com/samippp/grepo/internal/graph"
 	"github.com/samippp/grepo/internal/query"
 )
 
@@ -56,20 +58,20 @@ func newPrinter(rg *repoGraph) *printer {
 
 // path is a graph position, relative to the root, made relative to rg.base.
 func (p *printer) path(pos string) string {
-	file, line, _ := cutLast(pos, ":")
+	file, line := graph.SplitPos(pos)
 	abs := filepath.Join(p.rg.root, filepath.FromSlash(file))
 	if rel, err := filepath.Rel(p.rg.base, abs); err == nil {
 		abs = rel
 	}
-	if line == "" {
+	if line == 0 {
 		return abs
 	}
-	return abs + ":" + line
+	return abs + ":" + strconv.Itoa(line)
 }
 
 // line is the trimmed source line at pos, or "" if it can't be read.
 func (p *printer) line(pos string) string {
-	file, line, _ := cutLast(pos, ":")
+	file, n := graph.SplitPos(pos)
 	lines, ok := p.files[file]
 	if !ok {
 		data, err := os.ReadFile(filepath.Join(p.rg.root, filepath.FromSlash(file)))
@@ -78,8 +80,7 @@ func (p *printer) line(pos string) string {
 		}
 		p.files[file] = lines
 	}
-	var n int
-	if _, err := fmt.Sscan(line, &n); err != nil || n < 1 || n > len(lines) {
+	if n < 1 || n > len(lines) {
 		return ""
 	}
 	return strings.TrimSpace(lines[n-1])
@@ -106,13 +107,4 @@ func (p *printer) ambiguous(w io.Writer, err *query.AmbiguousError) error {
 		}
 	}
 	return reportedError{err}
-}
-
-// cutLast splits s around the last sep.
-func cutLast(s, sep string) (before, after string, found bool) {
-	i := strings.LastIndex(s, sep)
-	if i < 0 {
-		return s, "", false
-	}
-	return s[:i], s[i+len(sep):], true
 }

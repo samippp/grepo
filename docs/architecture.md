@@ -185,7 +185,7 @@ CallGraphBuilder.Add (a load.Walk: each repo package during the load; BuildCallG
 | Local type | enclosing function's or closure's ID + `.name#n`, numbered per name in source order | `…simple.save.result#2`, `…simple.spawn$1.job#1` |
 | Field | type ID + `.` + name | `…store.Store.users` |
 | Variable | `pkg.name` | `…store.defaultStore` |
-| Position (`Pos`) | `file:line`, relative to the repo root: where the record's own syntax is. A node's declaration; an edge's site (the call, the write; a literal's field). The other ends' positions are on their nodes. | `store/store.go:23` |
+| Position (`Pos`) | `file:line`, relative to the repo root (`graph.FormatPos`, read back with `SplitPos`): where the record's own syntax is. A node's declaration; an edge's site (the call, the write; a literal's field). The other ends' positions are on their nodes. | `store/store.go:23` |
 
 `(X).Name` follows Go's method-expression syntax: `(Getter).Get` is valid Go. Because the receiver is the type's ID, a method's ID always matches its `Owner`, even when the receiver renames type parameters (`func (l *List[E])` → `List[T]`) or is written through an alias (`func (s *S)` with `S = Store` → `Store`).
 
@@ -204,7 +204,7 @@ CallGraphBuilder.Add (a load.Walk: each repo package during the load; BuildCallG
 - Method IDs use the type's ID as the receiver (consistent with `Owner`; normalizes renamed type parameters and constraints).
 - Call positions are `file:line` at the start of the call expression.
 - Local types: `parent.name#n`, always numbered. Chosen over `pkg.name@file:line` because the ID says where the type lives (useful to the MCP) and survives line shifts (IDs that agents and scripts keep between queries). The parent is the innermost enclosing function or closure (`spawn$1.job#1`), or a package-level closure's ID.
-- Local type IDs are assigned during the walk and kept in an `idTable` that `funcID` / `typeID` consult; the graph keeps it, so `CallGraph.FuncID` / `TypeID` work for consumers like vtadiff. A local type missing from the table gets `#?` rather than silently taking a package-level ID.
+- Local type and `init` IDs are assigned during the walk and kept in an `idTable` that `funcID` / `typeID` consult; the graph keeps it, so `CallGraph.FuncID` / `TypeID` work for consumers like vtadiff. A local type missing from the table gets `#?` rather than silently taking a package-level ID.
 
 ### Functions and calls
 - A method is a `Function` with a receiver, not a separate struct.
